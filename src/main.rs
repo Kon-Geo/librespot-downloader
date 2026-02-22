@@ -253,9 +253,9 @@ impl Downloader {
     ) -> Result<(), Error> {
         let file_extension = get_extension_from_format(format);
         let artists = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
-
+        
         let mut filepath = dirpath.clone();
-        let filename = format!("{} - {} ({:?}).{}", artists, track.name, track.id.to_id(), file_extension);
+        let filename = format!("{} - {} ({}).{}", artists, track.name, track.id.to_id()?, file_extension);
         filepath.push(filename);
         let mut outfile = File::create(&filepath)?;
         copy(audio_file, &mut outfile)?;
@@ -369,7 +369,7 @@ async fn main() -> Result<(), Error> {
     }
     
     let mut downloader = Downloader::new(session);
-    downloader.download_album_by_id("0H0yH3OAMyV7ukvJu9iWLE", "downloads").await?;
+    downloader.download_album_by_id("2FRgTjahtyzUQG8A3ZaaDT", "downloads").await?;
 
     Ok(())
 }
