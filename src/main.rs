@@ -6,16 +6,11 @@ use std::{
     process::exit
 };
 use librespot::{
-    core::{
-        Error, authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
-        SpotifyId, SpotifyUri
-    },
-    audio::{AudioDecrypt, AudioFile},
-    metadata::{
-        Album, Metadata, Track, image,
-        audio::{AudioFileFormat, AudioFiles},
-    },
-    oauth::OAuthClientBuilder
+    audio::{AudioDecrypt, AudioFile}, core::{
+        Error, SpotifyId, SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig, session::Session
+    }, metadata::{
+        Album, Metadata, Track, audio::{AudioFileFormat, AudioFiles}, image
+    }, oauth::OAuthClientBuilder
 };
 use log::{LevelFilter, debug, error, info, warn};
 use lofty::{
@@ -162,6 +157,49 @@ impl Downloader {
         }
     }
 
+    pub async fn download_from_stdin(&mut self, directory: &str) -> Result<(), Error> {
+        print!("Enter a Spotify Track or Album URL: ");
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(());
+        }
+        self.download_by_url(input, directory).await
+    }
+
+    pub async fn download_by_url(&mut self, input: &str, directory: &str) -> Result<(), Error> {
+        let url = input.trim();
+        let path = url
+            .split("open.spotify.com/")
+            .nth(1)
+            .ok_or(Error::unavailable("Invalid Spotify URL"))?;
+        let mut parts = path.split('/');
+        let kind = parts
+            .next()
+            .ok_or(Error::unavailable("Missing resource type"))?;
+        let id = parts
+            .next()
+            .ok_or(Error::unavailable("Missing Spotify ID"))?
+            .split('?')
+            .next()
+            .unwrap();
+        match kind {
+            "track" => {
+                info!("Detected track");
+                self.download_track_by_id(id, directory).await?;
+            }
+            "album" => {
+                info!("Detected album");
+                self.download_album_by_id(id, directory).await?;
+            }
+            _ => {
+                error!("Unsupported Spotify type: {}", kind);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn download_album_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
         let id = SpotifyId::from_base62(base62)?;
         let uri = SpotifyUri::Album { id };
@@ -176,7 +214,10 @@ impl Downloader {
         info!("<{}> saved at {:?}", album.id, dirpath);
         _ = create_dir_all(&dirpath);
         for track_uri in album.tracks() {
-            self.download_track_by_uri(&track_uri, &dirpath).await?;
+            if let Err(e) = self.download_track_by_uri(&track_uri, &dirpath).await {
+                error!("Failed to download track {}: {:?}", track_uri, e);
+                continue;
+            }
         };
         Ok(())
     }
@@ -184,6 +225,14 @@ impl Downloader {
     pub async fn download_track_by_uri(&mut self, uri: &SpotifyUri, dirpath: &PathBuf) -> Result<(), Error> {
         let track = Track::get(&self.session, uri).await?;
         self.download_track(&track, dirpath).await
+    }
+
+    pub async fn download_track_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
+        let id = SpotifyId::from_base62(base62)?;
+        let uri = SpotifyUri::Track { id };
+        let track = Track::get(&self.session, &uri).await?;
+        let dirpath = PathBuf::from(directory);
+        self.download_track(&track, &dirpath).await
     }
 
     pub async fn download_track(&mut self, track: &Track, dirpath: &PathBuf) -> Result<(), Error> {
@@ -214,6 +263,13 @@ impl Downloader {
                 return Ok(());
             }
         };
+
+        let filepath = self.make_filepath(track, format, dirpath)?;
+        if filepath.exists() {
+            info!("Skipping Track #{}: {} ({})", track.number, track.name, track.id);
+            return Ok(());
+        }
+
         let bytes_per_second = format_data_rate(format);
         let encrypted_file = AudioFile::open(&self.session, file_id, bytes_per_second);
         let encrypted_file = match encrypted_file.await {
@@ -240,44 +296,41 @@ impl Downloader {
                 return Ok(());
             }
         };
-        self.save_decrypted_audio(format, &track, &mut audio_file, &dirpath).await?;
+
+        let mut outfile = File::create(&filepath)?;
+        copy(&mut audio_file, &mut outfile)?;
+        info!("Decrypted content saved to {:?}", filepath);
+
+        self.apply_tag(track, format, filepath).await?;
         Ok(())
     }
 
-    async fn save_decrypted_audio(
-        &mut self,
-        format: AudioFileFormat,
-        track: &Track,
-        audio_file: &mut Subfile<AudioDecrypt<AudioFile>>,
-        dirpath: &PathBuf
-    ) -> Result<(), Error> {
+    fn artists_string(&mut self, track: &Track) -> String {
+        track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
+    }
+
+    fn make_filepath(&mut self, track: &Track, format: AudioFileFormat, dirpath: &PathBuf) -> Result<PathBuf, Error> {
         let file_extension = get_extension_from_format(format);
-        let artists = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
-        
+        let artists = self.artists_string(&track);
         let mut filepath = dirpath.clone();
         let filename = format!("{} - {} ({}).{}", artists, track.name, track.id.to_id()?, file_extension);
         filepath.push(filename);
-        let mut outfile = File::create(&filepath)?;
-        copy(audio_file, &mut outfile)?;
-        info!("Decrypted content saved to {:?}", filepath);
-
-        self.apply_tag(file_extension, track, artists, filepath).await?;
-
-        Ok(())
+        return Ok(filepath);
     }
 
     async fn apply_tag(
         &mut self,
-        file_extension: String,
         track: &Track,
-        artists: String,
+        format: AudioFileFormat,
         filepath: PathBuf
     ) -> Result<(), Error> {
+        let file_extension = get_extension_from_format(format);
         let tag_type = match file_extension.as_str() {
             "ogg" | "flac" => TagType::VorbisComments,
             _ => TagType::Id3v2,
         };
         let mut tag = Tag::new(tag_type);
+        let artists = self.artists_string(track);
         tag.insert(TagItem::new(ItemKey::TrackTitle, ItemValue::Text(track.name.clone())));
         tag.insert(TagItem::new(ItemKey::AlbumTitle, ItemValue::Text(track.album.name.clone())));
         tag.insert(TagItem::new(ItemKey::TrackArtist, ItemValue::Text(artists)));
@@ -369,7 +422,10 @@ async fn main() -> Result<(), Error> {
     }
     
     let mut downloader = Downloader::new(session);
-    downloader.download_album_by_id("2FRgTjahtyzUQG8A3ZaaDT", "downloads").await?;
 
-    Ok(())
+    loop {
+        downloader.download_from_stdin("downloads").await?;
+    }
+
+    // Ok(())
 }
