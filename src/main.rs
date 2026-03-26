@@ -158,7 +158,7 @@ impl Downloader {
     }
 
     pub async fn download_from_stdin(&mut self, directory: &str) -> Result<(), Error> {
-        print!("Enter a Spotify Track or Album URL: ");
+        info!("Enter a Spotify Track or Album URL: ");
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         let input = input.trim();
@@ -186,15 +186,15 @@ impl Downloader {
             .unwrap();
         match kind {
             "track" => {
-                info!("Detected track");
+                debug!("Detected track URL");
                 self.download_track_by_id(id, directory).await?;
             }
             "album" => {
-                info!("Detected album");
+                debug!("Detected album URL");
                 self.download_album_by_id(id, directory).await?;
             }
             _ => {
-                error!("Unsupported Spotify type: {}", kind);
+                error!("Unsupported URL: {}", kind);
             }
         }
         Ok(())
@@ -208,23 +208,18 @@ impl Downloader {
     }
 
     pub async fn download_album(&mut self, album: Album, directory: &str) -> Result<(), Error> {
-        info!("Downloading Album: {}", album.name);
         let mut dirpath = PathBuf::from(directory);
         dirpath.push(&album.name);
-        info!("<{}> saved at {:?}", album.id, dirpath);
+        info!("<{}> Album \"{}\" will be saved at {:?}", album.id.to_id()?, album.name, dirpath);
         _ = create_dir_all(&dirpath);
         for track_uri in album.tracks() {
-            if let Err(e) = self.download_track_by_uri(&track_uri, &dirpath).await {
-                error!("Failed to download track {}: {:?}", track_uri, e);
-                continue;
-            }
+            let track = Track::get(&self.session, track_uri).await?;
+            if let Err(e) = self.download_track(&track, &dirpath).await {
+                error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
+                continue
+            };
         };
         Ok(())
-    }
-
-    pub async fn download_track_by_uri(&mut self, uri: &SpotifyUri, dirpath: &PathBuf) -> Result<(), Error> {
-        let track = Track::get(&self.session, uri).await?;
-        self.download_track(&track, dirpath).await
     }
 
     pub async fn download_track_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
@@ -236,14 +231,14 @@ impl Downloader {
     }
 
     pub async fn download_track(&mut self, track: &Track, dirpath: &PathBuf) -> Result<(), Error> {
-        info!("Downloading Track #{}: {} ({})", track.number, track.name, track.id);
+        info!("<{}> Downloading Track #{}: \"{}\"", track.id.to_id()?, track.number, track.name);
         let track_id = match track.id {
             SpotifyUri::Track { id } => id,
             _ => return Ok(()),
         };
 
         track.files.iter().for_each(|file| {
-            debug!("<{}> has format {:?}", track.id, file.0);
+            debug!("<{}> Has format {:?}", track.id.to_id().is_ok(), file.0);
         });
 
         let (format, file_id) = match FORMAT_PREFERENCE
@@ -255,18 +250,18 @@ impl Downloader {
             })
         {
             Some(format) => {
-                debug!("<{}> selected format {:?}", track.id, &format.0);
+                debug!("<{}> Selected format {:?}", track.id.to_id()?, &format.0);
                 format
             },
             None => {
-                warn!("<{}> is not available in any supported format", track.id);
+                error!("<{}> Skipping Track #{}: \"{}\" (Not available in any supported format)", track.id.to_id()?, track.number, track.name);
                 return Ok(());
             }
         };
 
         let filepath = self.make_filepath(track, format, dirpath)?;
         if filepath.exists() {
-            info!("Skipping Track #{}: {} ({})", track.number, track.name, track.id);
+            warn!("<{}> Skipping Track #{}: \"{}\" (File Already Exists)", track.id.to_id()?, track.number, track.name);
             return Ok(());
         }
 
@@ -275,7 +270,7 @@ impl Downloader {
         let encrypted_file = match encrypted_file.await {
             Ok(encrypted_file) => encrypted_file,
             Err(e) => {
-                error!("Unable to load encrypted file: {e:?}");
+                error!("<{}> Skipping Track #{}: \"{}\" (Unable to load encrypted file, {:?})", track.id.to_id()?, track.number, track.name, e);
                 return Ok(());
             }
         };
@@ -283,7 +278,7 @@ impl Downloader {
         let key = match self.session.audio_key().request(track_id, file_id).await {
             Ok(key) => Some(key),
             Err(e) => {
-                warn!("Unable to load key, continuing without decryption: {e}");
+                warn!("<{}> Unable to load key, continuing without decryption: {:?}", track.id.to_id()?, e);
                 None
             }
         };
@@ -292,14 +287,14 @@ impl Downloader {
         let mut audio_file = match Subfile::new(decrypted_file, offset, stream_loader_controller.len() as u64) {
             Ok(audio_file) => audio_file,
             Err(e) => {
-                error!("PlayerTrackLoader::download_track error opening subfile: {e}");
+                error!("<{}> Skipping Track #{}: \"{}\" (Cannot open subfile, {:?})", track.id.to_id()?, track.number, track.name, e);
                 return Ok(());
             }
         };
 
         let mut outfile = File::create(&filepath)?;
         copy(&mut audio_file, &mut outfile)?;
-        info!("Decrypted content saved to {:?}", filepath);
+        info!("<{}> Saved Track #{}: \"{}\" to {:?}", track.id.to_id()?, track.number, track.name, filepath);
 
         self.apply_tag(track, format, filepath).await?;
         Ok(())
@@ -348,9 +343,9 @@ impl Downloader {
         tag.push_picture(picture);
 
         if let Err(e) = tag.save_to_path(&filepath, WriteOptions::default()) {
-            warn!("Unable to write metadata to {:?}: {}", filepath, e);
+            warn!("<{}> Unable to write metadata to {:?}: {}", track.id.to_id()?, filepath, e);
         } else {
-            debug!("Metadata written to {:?}", filepath);
+            debug!("<{}> Metadata written to {:?}", track.id.to_id()?, filepath);
         }
 
         Ok(())
@@ -393,7 +388,7 @@ impl Downloader {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     env_logger::builder()
-        .filter_module("librespot", LevelFilter::Debug)
+        .filter_module("librespot", LevelFilter::Info)
         .init();
 
     let session_config = SessionConfig::default();
@@ -417,14 +412,14 @@ async fn main() -> Result<(), Error> {
     info!("Connecting...");
     let session = Session::new(session_config, Some(cache));
     if let Err(e) = session.connect(credentials, true).await {
-        info!("Error connecting: {e}");
+        error!("Error connecting: {}", e);
         exit(1);
     }
     
     let mut downloader = Downloader::new(session);
 
     loop {
-        downloader.download_from_stdin("downloads").await?;
+        downloader.download_from_stdin(".").await?;
     }
 
     // Ok(())
