@@ -9,7 +9,7 @@ use librespot::{
     audio::{AudioDecrypt, AudioFile}, core::{
         Error, SpotifyId, SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig, session::Session
     }, metadata::{
-        Album, Metadata, Track, audio::{AudioFileFormat, AudioFiles}, image
+        Album, Metadata, Playlist, Track, audio::{AudioFileFormat, AudioFiles}, image
     }, oauth::OAuthClientBuilder
 };
 use log::{LevelFilter, debug, error, info, warn};
@@ -158,7 +158,7 @@ impl Downloader {
     }
 
     pub async fn download_from_stdin(&mut self, directory: &str) -> Result<(), Error> {
-        info!("Enter a Spotify Track or Album URL: ");
+        info!("Enter a Spotify Track/Album/Playlist URL: ");
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
         let input = input.trim();
@@ -193,10 +193,36 @@ impl Downloader {
                 debug!("Detected album URL");
                 self.download_album_by_id(id, directory).await?;
             }
+            "playlist" => {
+                debug!("Detected playlist URL");
+                self.download_playlist_by_id(id, directory).await?;
+            }
             _ => {
                 error!("Unsupported URL: {}", kind);
             }
         }
+        Ok(())
+    }
+
+    pub async fn download_playlist_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
+        let id = SpotifyId::from_base62(base62)?;
+        let uri = SpotifyUri::Playlist { user: Some("".to_string()), id };
+        let playlist = Playlist::get(&self.session, &uri).await?;
+        self.download_playlist(playlist, directory).await
+    }
+
+    pub async fn download_playlist(&mut self, playlist: Playlist, directory: &str) -> Result<(), Error> {
+        let mut dirpath = PathBuf::from(directory);
+        dirpath.push(&playlist.name());
+        info!("<{}> Playlist \"{}\" will be saved at {:?}", playlist.id.to_id()?, playlist.name(), dirpath);
+        _ = create_dir_all(&dirpath);
+        for track_uri in playlist.tracks() {
+            let track = Track::get(&self.session, track_uri).await?;
+            if let Err(e) = self.download_track(&track, &dirpath).await {
+                error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
+                continue
+            };
+        };
         Ok(())
     }
 
@@ -419,7 +445,7 @@ async fn main() -> Result<(), Error> {
     let mut downloader = Downloader::new(session);
 
     loop {
-        downloader.download_from_stdin(".").await?;
+        downloader.download_from_stdin("downloads").await?;
     }
 
     // Ok(())
