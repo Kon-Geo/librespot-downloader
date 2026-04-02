@@ -9,7 +9,7 @@ use librespot::{
     audio::{AudioDecrypt, AudioFile}, core::{
         Error, SpotifyId, SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig, session::Session
     }, metadata::{
-        Album, Metadata, Playlist, Track, audio::{AudioFileFormat, AudioFiles}, image
+        Album, Artist, Metadata, Playlist, Track, artist::AlbumGroups, audio::{AudioFileFormat, AudioFiles}, image
     }, oauth::OAuthClientBuilder
 };
 use log::{LevelFilter, debug, error, info, warn};
@@ -184,61 +184,70 @@ impl Downloader {
             .split('?')
             .next()
             .unwrap();
+        let sp_id = SpotifyId::from_base62(id)?;
         match kind {
-            "track" => {
-                debug!("Detected track URL");
-                self.download_track_by_id(id, directory).await?;
-            }
-            "album" => {
-                debug!("Detected album URL");
-                self.download_album_by_id(id, directory).await?;
-            }
-            "playlist" => {
-                debug!("Detected playlist URL");
-                self.download_playlist_by_id(id, directory).await?;
-            }
-            _ => {
-                error!("Unsupported URL: {}", kind);
-            }
+            "track" => { self.download_track_by_id(sp_id, directory).await?; }
+            "album" => { self.download_album_by_id(sp_id, directory).await?; }
+            "artist" => { self.download_artist_by_id(sp_id, directory).await?; }
+            "playlist" => { self.download_playlist_by_id(sp_id, directory).await?; }
+            _ => { error!("Unsupported URL: {}", kind); }
         }
         Ok(())
     }
 
-    pub async fn download_playlist_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
-        let id = SpotifyId::from_base62(base62)?;
+    pub async fn download_playlist_by_id(&mut self, id: SpotifyId, directory: &str) -> Result<(), Error> {
         let uri = SpotifyUri::Playlist { user: Some("".to_string()), id };
         let playlist = Playlist::get(&self.session, &uri).await?;
         self.download_playlist(playlist, directory).await
     }
 
-    pub async fn download_playlist(&mut self, playlist: Playlist, directory: &str) -> Result<(), Error> {
+    pub async fn download_playlist(&mut self, album: Playlist, directory: &str) -> Result<(), Error> {
         let mut dirpath = PathBuf::from(directory);
-        dirpath.push(&playlist.name());
-        info!("<{}> Playlist \"{}\" will be saved at {:?}", playlist.id.to_id()?, playlist.name(), dirpath);
-        _ = create_dir_all(&dirpath);
-        for track_uri in playlist.tracks() {
-            let track = Track::get(&self.session, track_uri).await?;
-            if let Err(e) = self.download_track(&track, &dirpath).await {
-                error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
-                continue
-            };
-        };
+        dirpath.push(&album.name());
+        info!("<{}> Playlist \"{}\" will be saved at {:?}", album.id.to_id()?, album.name(), dirpath);
+        self.download_tracks(album.tracks(), &dirpath).await?;
         Ok(())
     }
 
-    pub async fn download_album_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
-        let id = SpotifyId::from_base62(base62)?;
+    pub async fn download_artist_by_id(&mut self, id: SpotifyId, directory: &str) -> Result<(), Error> {
+        let uri = SpotifyUri::Artist { id };
+        let artist = Artist::get(&self.session, &uri).await?;
+        self.download_artist(artist, directory).await
+    }
+
+    pub async fn download_artist(&mut self, artist: Artist, directory: &str) -> Result<(), Error> {
+        let mut dirpath = PathBuf::from(directory);
+        dirpath.push(&artist.name);
+        info!("<{}> Artist \"{}\" will be saved at {:?}", artist.id.to_id()?, artist.name, dirpath);
+        self.download_albums(artist.albums, directory, false).await?;
+        self.download_albums(artist.singles, directory, false).await?;
+        Ok(())
+    }
+
+    pub async fn download_album_by_id(&mut self, id: SpotifyId, directory: &str) -> Result<(), Error> {
         let uri = SpotifyUri::Album { id };
-        let album = Album::get(&self.session, &uri).await?;
-        self.download_album(album, directory).await
+        let album: Album = Album::get(&self.session, &uri).await?;
+        self.download_album(album, directory, false).await
     }
 
-    pub async fn download_album(&mut self, album: Album, directory: &str) -> Result<(), Error> {
+    pub async fn download_albums(&mut self, albums: AlbumGroups, directory: &str, merge: bool) -> Result<(), Error> {
+        for album_uri in albums.current_releases() {
+            let album = Album::get(&self.session, &album_uri).await?;
+            self.download_album(album, &directory, merge).await?;
+        };
+        Ok(())
+    }
+
+    pub async fn download_album(&mut self, album: Album, directory: &str, dir_is_final: bool) -> Result<(), Error> {
         let mut dirpath = PathBuf::from(directory);
-        dirpath.push(&album.name);
+        if !dir_is_final { dirpath.push(&album.name); }
         info!("<{}> Album \"{}\" will be saved at {:?}", album.id.to_id()?, album.name, dirpath);
-        _ = create_dir_all(&dirpath);
-        for track_uri in album.tracks() {
+        self.download_tracks(album.tracks(), &dirpath).await?;
+        Ok(())
+    }
+
+    async fn download_tracks(&mut self, tracks: impl Iterator<Item = &SpotifyUri>, dirpath: &PathBuf) -> Result<(), Error> {
+        for track_uri in tracks {
             let track = Track::get(&self.session, track_uri).await?;
             if let Err(e) = self.download_track(&track, &dirpath).await {
                 error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
@@ -248,8 +257,7 @@ impl Downloader {
         Ok(())
     }
 
-    pub async fn download_track_by_id(&mut self, base62: &str, directory: &str) -> Result<(), Error> {
-        let id = SpotifyId::from_base62(base62)?;
+    pub async fn download_track_by_id(&mut self, id: SpotifyId, directory: &str) -> Result<(), Error> {
         let uri = SpotifyUri::Track { id };
         let track = Track::get(&self.session, &uri).await?;
         let dirpath = PathBuf::from(directory);
@@ -257,6 +265,7 @@ impl Downloader {
     }
 
     pub async fn download_track(&mut self, track: &Track, dirpath: &PathBuf) -> Result<(), Error> {
+        create_dir_all(&dirpath)?;
         info!("<{}> Downloading Track #{}: \"{}\"", track.id.to_id()?, track.number, track.name);
         let track_id = match track.id {
             SpotifyUri::Track { id } => id,
