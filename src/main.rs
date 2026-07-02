@@ -21,6 +21,7 @@ use lofty::{
 };
 use http::{HeaderValue, Method, Request, header::ACCEPT};
 use bytes::Bytes;
+use sanitize_filename::sanitize;
 
 const CACHE: &str = ".cache";
 const CACHE_FILES: &str = ".cache/files";
@@ -344,6 +345,7 @@ impl Downloader {
         let artists = self.artists_string(&track);
         let mut filepath = dirpath.clone();
         let filename = format!("{} - {} ({}).{}", artists, track.name, track.id.to_id()?, file_extension);
+        let filename = sanitize(filename);
         filepath.push(filename);
         return Ok(filepath);
     }
