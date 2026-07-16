@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, fs::{File, create_dir_all}, io::{self, Seek, SeekFrom, copy}, path::{Path, PathBuf}, process::exit, sync::Arc
+    collections::HashMap, fs::{self, File, create_dir_all}, io::{self, Seek, SeekFrom, copy}, path::{Path, PathBuf}, process::exit, sync::Arc
 };
 use librespot::{
     audio::{AudioDecrypt, AudioFile}, core::{
@@ -45,6 +45,8 @@ const FORMAT_PREFERENCE: [AudioFileFormat; 19] = [
     AudioFileFormat::MP3_96,            // 18. Low-quality MP3
     AudioFileFormat::OTHER5,            // 19. Unknown/legacy format, last resort
 ];
+
+const EXCLUDE: [&'static str; 1] = ["5T6qUQtVUyNagAK4955FV1"];
 
 fn get_extension_from_format(format: AudioFileFormat) -> &'static str {
     match format {
@@ -97,6 +99,33 @@ fn format_data_rate(format: AudioFileFormat) -> usize {
 
 const SINGLES_FOLDER: &'static str = "Singles";
 const BASE_PATH: &'static str = "C:\\Users\\konge\\Desktop\\Music\\Music\\Trap";
+
+fn file_exists_with_any_extension(path: &Path, filename: &str) -> bool {
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let file_path = entry.path();
+            if let Some(stem) = file_path.file_stem() {
+                if stem == filename {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn get_track_path(track: &Track) -> PathBuf {
+    let mut dirpath = PathBuf::from(BASE_PATH);
+    if let Some(artist) = track.album.artists.0.get(0) {
+        dirpath.push(artist.name.clone());
+    }
+    if track.album.album_type == AlbumType::SINGLE {
+        dirpath.push(SINGLES_FOLDER);
+    } else {
+        dirpath.push(&track.album.name);
+    }
+    dirpath
+}
 
 pub struct Cover {
     data: Vec<u8>,
@@ -194,15 +223,24 @@ impl Downloader {
     }
 
     pub async fn download_album(&mut self, album: Album) -> Result<(), Error> {
-        info!("<{}> Downloading Album \"{}\"", album.id.to_id()?, album.name);
-        self.download_tracks(album.tracks()).await
+        let b62id = album.id.to_id()?;
+        if EXCLUDE.contains(&b62id.as_str()) {
+            warn!("<{}> Skipping Album \"{}\" (EXCLUDED)", b62id, album.name);
+            Ok(())
+        } else {
+            info!("<{}> Downloading Album \"{}\"", b62id, album.name);
+            self.download_tracks(album.tracks()).await
+        }
     }
 
     async fn download_tracks(&mut self, tracks: impl Iterator<Item = &SpotifyUri>) -> Result<(), Error> {
         for track_uri in tracks {
             let track = Track::get(&self.session, track_uri).await?;
-            if let Err(e) = self.download_track(&track).await {
-                error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
+            let b62id = track.id.to_id()?;
+            if EXCLUDE.contains(&b62id.as_str()) {
+                warn!("<{}> Skipping Track \"{}\" (EXCLUDED)", b62id, track.name);
+            } else if let Err(e) = self.download_track(&track).await {
+                error!("<{}> Failed to download track {} ({:?})", b62id, track.name, e);
             };
         };
         Ok(())
@@ -215,7 +253,14 @@ impl Downloader {
     }
 
     pub async fn download_track(&mut self, track: &Track) -> Result<(), Error> {
-        info!("<{}> Downloading Track #{}: \"{}\"", track.id.to_id()?, track.number, track.name);
+        let artists_string = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
+        let file_stem = format!("{} - {} ({})", artists_string, track.name, track.id.to_id()?);
+        let dirpath = get_track_path(track);
+        if file_exists_with_any_extension(&dirpath, file_stem.as_str()) {
+            warn!("<{}> Skipping Track #{}: \"{}\" (File Stem Already Exists)", track.id.to_id()?, track.number, track.name);
+            return Ok(());
+        }
+
         let track_id = match track.id {
             SpotifyUri::Track { id } => id,
             _ => return Ok(()),
@@ -233,19 +278,8 @@ impl Downloader {
             .ok_or_else(|| Error::failed_precondition("No format available"))?;
         debug!("<{}> Selected format: {:?}", track.id.to_id().is_ok(), format);
 
-        let mut dirpath = PathBuf::from(BASE_PATH);
-        if let Some(artist) = track.album.artists.0.get(0) {
-            dirpath.push(artist.name.clone());
-        }
-        if track.album.album_type == AlbumType::SINGLE {
-            dirpath.push(SINGLES_FOLDER);
-        } else {
-            dirpath.push(&track.album.name);
-        }
-
-        let artists_string = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
         let file_extension = get_extension_from_format(format);
-        let filename = format!("{} - {} ({}).{}", artists_string, track.name, track.id.to_id()?, file_extension);
+        let filename = format!("{}.{}", file_stem, file_extension);
         let filename = sanitize(filename);
         let filename = filename.chars().take(200).collect::<String>();
         let filepath = dirpath.join(filename);
