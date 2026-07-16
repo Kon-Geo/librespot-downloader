@@ -96,6 +96,7 @@ fn format_data_rate(format: AudioFileFormat) -> usize {
 }
 
 const SINGLES_FOLDER: &'static str = "Singles";
+const BASE_PATH: &'static str = "C:\\Users\\konge\\Desktop\\Music\\Music\\Trap";
 
 pub struct Cover {
     data: Vec<u8>,
@@ -115,7 +116,7 @@ impl Downloader {
         }
     }
 
-    pub async fn download_from_stdin(&mut self, directory: &Path) -> Result<(), Error> {
+    pub async fn download_from_stdin(&mut self) -> Result<(), Error> {
         info!("Enter a Spotify Track/Album/Playlist URL: ");
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
@@ -123,10 +124,10 @@ impl Downloader {
         if input.is_empty() {
             return Ok(());
         }
-        self.download_by_url(input, directory).await
+        self.download_by_url(input).await
     }
 
-    pub async fn download_by_url(&mut self, input: &str, directory: &Path) -> Result<(), Error> {
+    pub async fn download_by_url(&mut self, input: &str) -> Result<(), Error> {
         let url = input.trim();
         let path = url
             .split("open.spotify.com/")
@@ -144,100 +145,76 @@ impl Downloader {
             .unwrap();
         let sp_id = SpotifyId::from_base62(id)?;
         match kind {
-            "track" => self.download_track_by_id(sp_id, directory).await,
-            "album" => self.download_album_by_id(sp_id, directory).await,
-            "artist" => self.download_artist_by_id(sp_id, directory).await,
-            "playlist" => self.download_playlist_by_id(sp_id, directory).await,
+            "track" => self.download_track_by_id(sp_id).await,
+            "album" => self.download_album_by_id(sp_id).await,
+            "artist" => self.download_artist_by_id(sp_id).await,
+            "playlist" => self.download_playlist_by_id(sp_id).await,
             _ => Err(Error::invalid_argument(format!("Unsupported URL: {}", kind)))
         }
     }
 
-    pub async fn download_playlist_by_id(&mut self, id: SpotifyId, directory: &Path) -> Result<(), Error> {
+    pub async fn download_playlist_by_id(&mut self, id: SpotifyId) -> Result<(), Error> {
         let uri = SpotifyUri::Playlist { user: Some("".to_string()), id };
         let playlist = Playlist::get(&self.session, &uri).await?;
-        self.download_playlist(playlist, directory).await
+        self.download_playlist(playlist).await
     }
 
-    pub async fn download_playlist(&mut self, album: Playlist, directory: &Path) -> Result<(), Error> {
-        let mut dirpath = PathBuf::from(directory);
-        dirpath.push(&album.name());
-        info!("<{}> Playlist \"{}\" will be saved at {:?}", album.id.to_id()?, album.name(), dirpath);
-        self.download_tracks(album.tracks(), &dirpath).await?;
-        Ok(())
+    pub async fn download_playlist(&mut self, album: Playlist) -> Result<(), Error> {
+        info!("<{}> Downloading Playlist \"{}\"", album.id.to_id()?, album.name());
+        self.download_tracks(album.tracks()).await
     }
 
-    pub async fn download_artist_by_id(&mut self, id: SpotifyId, directory: &Path) -> Result<(), Error> {
+    pub async fn download_artist_by_id(&mut self, id: SpotifyId) -> Result<(), Error> {
         let uri = SpotifyUri::Artist { id };
         let artist = Artist::get(&self.session, &uri).await?;
-        self.download_artist(artist, directory).await
+        self.download_artist(artist).await
     }
 
-    pub async fn download_artist(&mut self, artist: Artist, directory: &Path) -> Result<(), Error> {
-        let mut dirpath = PathBuf::from(directory);
-        dirpath.push(&artist.name);
-        info!("<{}> Artist \"{}\" will be saved at {:?}", artist.id.to_id()?, artist.name, dirpath);
-        self.download_albums(artist.albums, &dirpath, false).await?;
-        self.download_albums(artist.singles, &dirpath, false).await?;
+    pub async fn download_artist(&mut self, artist: Artist) -> Result<(), Error> {
+        info!("<{}> Downloading Artist \"{}\"", artist.id.to_id()?, artist.name);
+        self.download_albums(artist.albums).await?;
+        self.download_albums(artist.singles).await?;
         Ok(())
     }
 
-    pub async fn download_album_by_id(&mut self, id: SpotifyId, directory: &Path) -> Result<(), Error> {
-        self.download_album_by_uri(&SpotifyUri::Album { id }, directory, true, false).await
+    pub async fn download_album_by_id(&mut self, id: SpotifyId) -> Result<(), Error> {
+        self.download_album_by_uri(&SpotifyUri::Album { id }).await
     }
 
-    pub async fn download_album_by_uri(&mut self, uri: &SpotifyUri, directory: &Path, entry_point: bool, dir_is_final: bool) -> Result<(), Error> {
+    pub async fn download_album_by_uri(&mut self, uri: &SpotifyUri) -> Result<(), Error> {
         let album = Album::get(&self.session, uri).await?;
-        self.download_album(album, &directory, entry_point, dir_is_final).await
+        self.download_album(album).await
     }
 
-    pub async fn download_albums(&mut self, albums: AlbumGroups, directory: &Path, merge: bool) -> Result<(), Error> {
+    pub async fn download_albums(&mut self, albums: AlbumGroups) -> Result<(), Error> {
         for uri in albums.current_releases() {
-            self.download_album_by_uri(uri, directory, false, merge).await?;
+            self.download_album_by_uri(uri).await?;
         };
         Ok(())
     }
 
-    pub async fn download_album(&mut self, album: Album, directory: &Path, entry_point: bool, dir_is_final: bool) -> Result<(), Error> {
-        let mut dirpath = PathBuf::from(directory);
-        if !dir_is_final {
-            if entry_point {
-                if let Some(artist) = album.artists.0.get(0) {
-                    dirpath.push(artist.name.clone());
-                }
-            }
-            if album.album_type == AlbumType::SINGLE {
-                dirpath.push(SINGLES_FOLDER);
-            } else {
-                dirpath.push(&album.name);
-            }
-        }
-        info!("<{}> Album \"{}\" will be saved at {:?}", album.id.to_id()?, album.name, dirpath);
-        self.download_tracks(album.tracks(), &dirpath).await?;
-        Ok(())
+    pub async fn download_album(&mut self, album: Album) -> Result<(), Error> {
+        info!("<{}> Downloading Album \"{}\"", album.id.to_id()?, album.name);
+        self.download_tracks(album.tracks()).await
     }
 
-    async fn download_tracks(&mut self, tracks: impl Iterator<Item = &SpotifyUri>, dirpath: &Path) -> Result<(), Error> {
+    async fn download_tracks(&mut self, tracks: impl Iterator<Item = &SpotifyUri>) -> Result<(), Error> {
         for track_uri in tracks {
             let track = Track::get(&self.session, track_uri).await?;
-            if let Err(e) = self.download_track(&track, &dirpath).await {
+            if let Err(e) = self.download_track(&track).await {
                 error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
             };
         };
         Ok(())
     }
 
-    pub async fn download_track_by_id(&mut self, id: SpotifyId, directory: &Path) -> Result<(), Error> {
+    pub async fn download_track_by_id(&mut self, id: SpotifyId) -> Result<(), Error> {
         let uri = SpotifyUri::Track { id };
         let track = Track::get(&self.session, &uri).await?;
-        let mut dirpath = PathBuf::from(directory);
-        if let Some(artist) = track.album.artists.0.get(0) {
-            dirpath.push(artist.name.clone());
-        }
-        dirpath.push(SINGLES_FOLDER);
-        self.download_track(&track, &dirpath).await
+        self.download_track(&track).await
     }
 
-    pub async fn download_track(&mut self, track: &Track, dirpath: &Path) -> Result<(), Error> {
+    pub async fn download_track(&mut self, track: &Track) -> Result<(), Error> {
         info!("<{}> Downloading Track #{}: \"{}\"", track.id.to_id()?, track.number, track.name);
         let track_id = match track.id {
             SpotifyUri::Track { id } => id,
@@ -249,13 +226,22 @@ impl Downloader {
             .map(|f| format!("{:?}", f))
             .collect::<Vec<_>>()
             .join(", ");
-
         debug!("<{}> Has formats: {}", track.id.to_id().is_ok(), fids);
 
         let (format, file_id) = FORMAT_PREFERENCE.iter()
             .find_map(|&format| track.files.get(&format).map(|id| (format, id)))
             .ok_or_else(|| Error::failed_precondition("No format available"))?;
         debug!("<{}> Selected format: {:?}", track.id.to_id().is_ok(), format);
+
+        let mut dirpath = PathBuf::from(BASE_PATH);
+        if let Some(artist) = track.album.artists.0.get(0) {
+            dirpath.push(artist.name.clone());
+        }
+        if track.album.album_type == AlbumType::SINGLE {
+            dirpath.push(SINGLES_FOLDER);
+        } else {
+            dirpath.push(&track.album.name);
+        }
 
         let artists_string = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
         let file_extension = get_extension_from_format(format);
@@ -386,10 +372,7 @@ async fn main() -> Result<(), Error> {
     
     let mut downloader = Downloader::new(Arc::new(session));
 
-    // let base_path = "downloads";
-    // let directory: PathBuf = PathBuf::from(base_path);
-    let directory: PathBuf = PathBuf::from("C:\\Users\\konge\\Desktop\\Music\\Music\\Trap");
-    while downloader.download_from_stdin(&directory).await.is_ok() {}
+    while downloader.download_from_stdin().await.is_ok() {}
 
     Ok(())
 }
