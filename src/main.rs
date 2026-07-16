@@ -200,7 +200,7 @@ impl Downloader {
     pub async fn download_album(&mut self, album: Album, directory: &Path, entry_point: bool, dir_is_final: bool) -> Result<(), Error> {
         let mut dirpath = PathBuf::from(directory);
         if !dir_is_final {
-            if !entry_point {
+            if entry_point {
                 if let Some(artist) = album.artists.0.get(0) {
                     dirpath.push(artist.name.clone());
                 }
