@@ -19,7 +19,20 @@ use http::{HeaderValue, Method, Request, header::ACCEPT};
 use bytes::Bytes;
 use sanitize_filename::sanitize;
 use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Config {
+    exclude: Vec<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { exclude: Vec::new() }
+    }
+}
+
+const CONFIG: &str = "config.json";
 const CACHE: &str = ".cache";
 const CACHE_FILES: &str = ".cache/files";
 const SPOTIFY_OGG_HEADER_END: u64 = 0xa7;
@@ -45,8 +58,6 @@ const FORMAT_PREFERENCE: [AudioFileFormat; 19] = [
     AudioFileFormat::MP3_96,            // 18. Low-quality MP3
     AudioFileFormat::OTHER5,            // 19. Unknown/legacy format, last resort
 ];
-
-const EXCLUDE: [&'static str; 1] = ["5T6qUQtVUyNagAK4955FV1"];
 
 fn get_extension_from_format(format: AudioFileFormat) -> &'static str {
     match format {
@@ -133,6 +144,7 @@ pub struct Cover {
 }
 
 pub struct Downloader {
+    pub config: Arc<Config>,
     pub session: Arc<Session>,
     pub album_cover_cache: Arc<RwLock<HashMap<String, Arc<Cover>>>>,
 }
@@ -140,6 +152,7 @@ pub struct Downloader {
 impl Downloader {
     pub fn new(session: Arc<Session>) -> Self {
         Self {
+            config: Arc::new(load_config().unwrap_or_else(|_| Config::default())),
             session,
             album_cover_cache: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -224,7 +237,7 @@ impl Downloader {
 
     pub async fn download_album(&mut self, album: Album) -> Result<(), Error> {
         let b62id = album.id.to_id()?;
-        if EXCLUDE.contains(&b62id.as_str()) {
+        if self.config.exclude.contains(&b62id) {
             warn!("<{}> Skipping Album \"{}\" (EXCLUDED)", b62id, album.name);
             Ok(())
         } else {
@@ -237,7 +250,7 @@ impl Downloader {
         for track_uri in tracks {
             let track = Track::get(&self.session, track_uri).await?;
             let b62id = track.id.to_id()?;
-            if EXCLUDE.contains(&b62id.as_str()) {
+            if self.config.exclude.contains(&b62id) {
                 warn!("<{}> Skipping Track \"{}\" (EXCLUDED)", b62id, track.name);
             } else if let Err(e) = self.download_track(&track).await {
                 error!("<{}> Failed to download track {} ({:?})", b62id, track.name, e);
@@ -371,6 +384,12 @@ impl Downloader {
         cache.insert(id.to_owned(), cover);
         Ok(())
     }
+}
+
+fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
+    let contents = fs::read_to_string(CONFIG)?;
+    let config: Config = serde_json::from_str(&contents)?;
+    Ok(config)
 }
 
 #[tokio::main]

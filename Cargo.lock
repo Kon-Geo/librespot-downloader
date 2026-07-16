@@ -1440,6 +1440,8 @@ dependencies = [
  "lofty",
  "log",
  "sanitize-filename",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
