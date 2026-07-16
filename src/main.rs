@@ -1,9 +1,5 @@
 use std::{
-    collections::HashMap,
-    fs::{File, create_dir_all},
-    io::{self, Read, Seek, SeekFrom, copy},
-    path::PathBuf,
-    process::exit
+    collections::HashMap, fs::{File, create_dir_all}, io::{self, Seek, SeekFrom, copy}, path::PathBuf, process::exit
 };
 use librespot::{
     audio::{AudioDecrypt, AudioFile}, core::{
@@ -49,8 +45,8 @@ const FORMAT_PREFERENCE: [AudioFileFormat; 19] = [
     AudioFileFormat::OTHER5,            // 19. Unknown/legacy format, last resort
 ];
 
-fn get_extension_from_format(format: AudioFileFormat) -> String {
-    let extension = match format {
+fn get_extension_from_format(format: AudioFileFormat) -> &'static str {
+    match format {
         AudioFileFormat::OGG_VORBIS_96
         | AudioFileFormat::OGG_VORBIS_160
         | AudioFileFormat::OGG_VORBIS_320 => "ogg",
@@ -69,8 +65,7 @@ fn get_extension_from_format(format: AudioFileFormat) -> String {
         | AudioFileFormat::XHE_AAC_24 => "aac",
         AudioFileFormat::FLAC_FLAC | AudioFileFormat::FLAC_FLAC_24BIT => "flac",
         _ => "bin",
-    };
-    String::from(extension)
+    }
 }
 
 fn format_data_rate(format: AudioFileFormat) -> usize {
@@ -97,52 +92,6 @@ fn format_data_rate(format: AudioFileFormat) -> usize {
     };
     let data_rate: f32 = kbps * 1024.;
     data_rate.ceil() as usize
-}
-
-struct Subfile<T: Read + Seek> {
-    stream: T,
-    offset: u64,
-    length: u64,
-}
-
-impl<T: Read + Seek> Subfile<T> {
-    pub fn new(mut stream: T, offset: u64, length: u64) -> Result<Subfile<T>, io::Error> {
-        let target = SeekFrom::Start(offset);
-        stream.seek(target)?;
-
-        Ok(Subfile {
-            stream,
-            offset,
-            length,
-        })
-    }
-}
-
-impl<T: Read + Seek> Read for Subfile<T> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.stream.read(buf)
-    }
-}
-
-impl<T: Read + Seek> Seek for Subfile<T> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let pos = match pos {
-            SeekFrom::Start(offset) => SeekFrom::Start(offset + self.offset),
-            SeekFrom::End(offset) => {
-                if (self.length as i64 - offset) < self.offset as i64 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "newpos would be < self.offset",
-                    ));
-                }
-                pos
-            }
-            _ => pos,
-        };
-
-        let newpos = self.stream.seek(pos)?;
-        Ok(newpos - self.offset)
-    }
 }
 
 pub struct Downloader {
@@ -187,13 +136,12 @@ impl Downloader {
             .unwrap();
         let sp_id = SpotifyId::from_base62(id)?;
         match kind {
-            "track" => { self.download_track_by_id(sp_id, directory).await?; }
-            "album" => { self.download_album_by_id(sp_id, directory).await?; }
-            "artist" => { self.download_artist_by_id(sp_id, directory).await?; }
-            "playlist" => { self.download_playlist_by_id(sp_id, directory).await?; }
-            _ => { error!("Unsupported URL: {}", kind); }
+            "track" => self.download_track_by_id(sp_id, directory).await,
+            "album" => self.download_album_by_id(sp_id, directory).await,
+            "artist" => self.download_artist_by_id(sp_id, directory).await,
+            "playlist" => self.download_playlist_by_id(sp_id, directory).await,
+            _ => Err(Error::invalid_argument(format!("Unsupported URL: {}", kind)))
         }
-        Ok(())
     }
 
     pub async fn download_playlist_by_id(&mut self, id: SpotifyId, directory: &str) -> Result<(), Error> {
@@ -226,22 +174,26 @@ impl Downloader {
     }
 
     pub async fn download_album_by_id(&mut self, id: SpotifyId, directory: &str) -> Result<(), Error> {
-        let uri = SpotifyUri::Album { id };
-        let album: Album = Album::get(&self.session, &uri).await?;
-        self.download_album(album, directory, false).await
+        self.download_album_by_uri(&SpotifyUri::Album { id }, directory, false).await
+    }
+
+    pub async fn download_album_by_uri(&mut self, uri: &SpotifyUri, directory: &str, dir_is_final: bool) -> Result<(), Error> {
+        let album = Album::get(&self.session, uri).await?;
+        self.download_album(album, &directory, dir_is_final).await
     }
 
     pub async fn download_albums(&mut self, albums: AlbumGroups, directory: &str, merge: bool) -> Result<(), Error> {
-        for album_uri in albums.current_releases() {
-            let album = Album::get(&self.session, &album_uri).await?;
-            self.download_album(album, &directory, merge).await?;
+        for uri in albums.current_releases() {
+            self.download_album_by_uri(uri, directory, merge).await?;
         };
         Ok(())
     }
 
     pub async fn download_album(&mut self, album: Album, directory: &str, dir_is_final: bool) -> Result<(), Error> {
         let mut dirpath = PathBuf::from(directory);
-        if !dir_is_final { dirpath.push(&album.name); }
+        if !dir_is_final {
+            dirpath.push(&album.name);
+        }
         info!("<{}> Album \"{}\" will be saved at {:?}", album.id.to_id()?, album.name, dirpath);
         self.download_tracks(album.tracks(), &dirpath).await?;
         Ok(())
@@ -252,7 +204,6 @@ impl Downloader {
             let track = Track::get(&self.session, track_uri).await?;
             if let Err(e) = self.download_track(&track, &dirpath).await {
                 error!("<{}> Failed to download track {} ({:?})", track.id.to_id()?, track.name, e);
-                continue
             };
         };
         Ok(())
@@ -266,117 +217,64 @@ impl Downloader {
     }
 
     pub async fn download_track(&mut self, track: &Track, dirpath: &PathBuf) -> Result<(), Error> {
-        create_dir_all(&dirpath)?;
         info!("<{}> Downloading Track #{}: \"{}\"", track.id.to_id()?, track.number, track.name);
         let track_id = match track.id {
             SpotifyUri::Track { id } => id,
             _ => return Ok(()),
         };
 
-        track.files.iter().for_each(|file| {
-            debug!("<{}> Has format {:?}", track.id.to_id().is_ok(), file.0);
-        });
+        let fids = track.files.iter()
+            .map(|f| format!("{:?}", f.0))
+            .collect::<Vec<_>>()
+            .join(", ")
+        ;
+        debug!("<{}> Has formats: {}", track.id.to_id().is_ok(), fids);
 
-        let (format, file_id) = match FORMAT_PREFERENCE
-            .iter()
-            .find_map(|format| {
-                track.files
-                .get(format)
-                .map(|file_id| (*format, file_id.clone()))
-            })
-        {
-            Some(format) => {
-                debug!("<{}> Selected format {:?}", track.id.to_id()?, &format.0);
-                format
-            },
-            None => {
-                error!("<{}> Skipping Track #{}: \"{}\" (Not available in any supported format)", track.id.to_id()?, track.number, track.name);
-                return Ok(());
-            }
-        };
+        let (format, file_id) = FORMAT_PREFERENCE.iter()
+            .find_map(|&format| track.files.get(&format).map(|id| (format, id)))
+            .ok_or_else(|| Error::failed_precondition("No format available"))?;
+        debug!("<{}> Selected format: {:?}", track.id.to_id().is_ok(), format);
 
-        let filepath = self.make_filepath(track, format, dirpath)?;
+        let artists_string = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
+        let file_extension = get_extension_from_format(format);
+        let filename = format!("{} - {} ({}).{}", artists_string, track.name, track.id.to_id()?, file_extension);
+        let filename = sanitize(filename);
+        let filepath = dirpath.join(filename);
         if filepath.exists() {
             warn!("<{}> Skipping Track #{}: \"{}\" (File Already Exists)", track.id.to_id()?, track.number, track.name);
             return Ok(());
         }
 
         let bytes_per_second = format_data_rate(format);
-        let encrypted_file = AudioFile::open(&self.session, file_id, bytes_per_second);
-        let encrypted_file = match encrypted_file.await {
-            Ok(encrypted_file) => encrypted_file,
-            Err(e) => {
-                error!("<{}> Skipping Track #{}: \"{}\" (Unable to load encrypted file, {:?})", track.id.to_id()?, track.number, track.name, e);
-                return Ok(());
-            }
-        };
-        let stream_loader_controller = encrypted_file.get_stream_loader_controller()?;
-        let key = match self.session.audio_key().request(track_id, file_id).await {
-            Ok(key) => Some(key),
-            Err(e) => {
-                warn!("<{}> Unable to load key, continuing without decryption: {:?}", track.id.to_id()?, e);
-                None
-            }
-        };
-        let decrypted_file = AudioDecrypt::new(key, encrypted_file);
+        let encrypted_file = AudioFile::open(&self.session, *file_id, bytes_per_second).await?;
+        let key = self.session.audio_key().request(track_id, *file_id).await?;
+        let mut decrypted_file = AudioDecrypt::new(Some(key), encrypted_file);
         let offset = if AudioFiles::is_ogg_vorbis(format) { SPOTIFY_OGG_HEADER_END } else { 0 };
-        let mut audio_file = match Subfile::new(decrypted_file, offset, stream_loader_controller.len() as u64) {
-            Ok(audio_file) => audio_file,
-            Err(e) => {
-                error!("<{}> Skipping Track #{}: \"{}\" (Cannot open subfile, {:?})", track.id.to_id()?, track.number, track.name, e);
-                return Ok(());
-            }
-        };
+        decrypted_file.seek(SeekFrom::Start(offset))?;
 
+        create_dir_all(&dirpath)?;
         let mut outfile = File::create(&filepath)?;
-        copy(&mut audio_file, &mut outfile)?;
+        copy(&mut decrypted_file, &mut outfile)?;
         info!("<{}> Saved Track #{}: \"{}\" to {:?}", track.id.to_id()?, track.number, track.name, filepath);
-
-        self.apply_tag(track, format, filepath).await?;
-        Ok(())
-    }
-
-    fn artists_string(&mut self, track: &Track) -> String {
-        track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
-    }
-
-    fn make_filepath(&mut self, track: &Track, format: AudioFileFormat, dirpath: &PathBuf) -> Result<PathBuf, Error> {
-        let file_extension = get_extension_from_format(format);
-        let artists = self.artists_string(&track);
-        let mut filepath = dirpath.clone();
-        let filename = format!("{} - {} ({}).{}", artists, track.name, track.id.to_id()?, file_extension);
-        let filename = sanitize(filename);
-        filepath.push(filename);
-        return Ok(filepath);
-    }
-
-    async fn apply_tag(
-        &mut self,
-        track: &Track,
-        format: AudioFileFormat,
-        filepath: PathBuf
-    ) -> Result<(), Error> {
-        let file_extension = get_extension_from_format(format);
-        let tag_type = match file_extension.as_str() {
+        
+        let tag_type = match file_extension {
             "ogg" | "flac" => TagType::VorbisComments,
             _ => TagType::Id3v2,
         };
+        self.apply_tag(track, tag_type, filepath, artists_string).await?;
+        Ok(())
+    }
+
+    async fn apply_tag(&mut self, track: &Track, tag_type: TagType, filepath: PathBuf, artists_string: String) -> Result<(), Error> {
         let mut tag = Tag::new(tag_type);
-        let artists = self.artists_string(track);
         tag.insert(TagItem::new(ItemKey::TrackTitle, ItemValue::Text(track.name.clone())));
         tag.insert(TagItem::new(ItemKey::AlbumTitle, ItemValue::Text(track.album.name.clone())));
-        tag.insert(TagItem::new(ItemKey::TrackArtist, ItemValue::Text(artists)));
+        tag.insert(TagItem::new(ItemKey::TrackArtist, ItemValue::Text(artists_string)));
         tag.insert(TagItem::new(ItemKey::TrackNumber, ItemValue::Text(track.number.to_string())));
         tag.insert(TagItem::new(ItemKey::Isrc, ItemValue::Text(track.id.to_uri()?)));
-        // tag.insert(TagItem::new(ItemKey::RecordingDate, ItemValue::Text(year)));
 
         let (cover_data, mime_type) = self.get_cover(track).await?;
-        let picture = Picture::new_unchecked(
-            PictureType::CoverFront,
-            Some(mime_type),
-            Some("cover".to_string()),
-            cover_data
-        );
+        let picture = Picture::new_unchecked(PictureType::CoverFront, Some(mime_type.clone()), Some("cover".to_string()), cover_data.clone());
         tag.push_picture(picture);
 
         if let Err(e) = tag.save_to_path(&filepath, WriteOptions::default()) {
@@ -388,7 +286,7 @@ impl Downloader {
         Ok(())
     }
 
-    async fn get_cover(&mut self, track: &Track) -> Result<(Vec<u8>, MimeType), Error> {
+    async fn get_cover(&mut self, track: &Track) -> Result<(&Vec<u8>, &MimeType), Error> {
         fn size_rank(size: image::ImageSize) -> i32 {
             match size {
                 image::ImageSize::DEFAULT => 0,
@@ -403,7 +301,7 @@ impl Downloader {
             self.download_cover(&cover_id).await?;
         }
         let (cover_data, mime_type) = self.album_cover_cache.get(&cover_id).unwrap();
-        Ok((cover_data.clone(), mime_type.clone()))
+        Ok((cover_data, mime_type))
     }   
 
     async fn download_cover(&mut self, id: &String) -> Result<(), Error> {
