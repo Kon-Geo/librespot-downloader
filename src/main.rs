@@ -1,11 +1,11 @@
 use std::{
-    collections::HashMap, io::{self, Seek, SeekFrom, copy}, path::{Path, PathBuf}, fs::{File, create_dir_all}, process::exit, sync::Arc
+    collections::HashMap, fs::{File, create_dir_all}, io::{self, Seek, SeekFrom, copy}, path::{Path, PathBuf}, process::exit, sync::Arc
 };
 use librespot::{
     audio::{AudioDecrypt, AudioFile}, core::{
         Error, SpotifyId, SpotifyUri, authentication::Credentials, cache::Cache, config::SessionConfig, session::Session
     }, metadata::{
-        Album, Artist, Metadata, Playlist, Track, artist::AlbumGroups, audio::{AudioFileFormat, AudioFiles}, image
+        Album, Artist, Metadata, Playlist, Track, album::AlbumType, artist::AlbumGroups, audio::{AudioFileFormat, AudioFiles}, image
     }, oauth::OAuthClientBuilder
 };
 use log::{LevelFilter, debug, error, info, warn};
@@ -95,6 +95,8 @@ fn format_data_rate(format: AudioFileFormat) -> usize {
     data_rate.ceil() as usize
 }
 
+const SINGLES_FOLDER: &'static str = "Singles";
+
 pub struct Cover {
     data: Vec<u8>,
     mime: MimeType,
@@ -180,23 +182,35 @@ impl Downloader {
     }
 
     pub async fn download_album_by_id(&mut self, id: SpotifyId, directory: &Path) -> Result<(), Error> {
-        self.download_album_by_uri(&SpotifyUri::Album { id }, directory, false).await
+        self.download_album_by_uri(&SpotifyUri::Album { id }, directory, true, false).await
     }
 
-    pub async fn download_album_by_uri(&mut self, uri: &SpotifyUri, directory: &Path, dir_is_final: bool) -> Result<(), Error> {
+    pub async fn download_album_by_uri(&mut self, uri: &SpotifyUri, directory: &Path, entry_point: bool, dir_is_final: bool) -> Result<(), Error> {
         let album = Album::get(&self.session, uri).await?;
-        self.download_album(album, &directory, dir_is_final).await
+        self.download_album(album, &directory, entry_point, dir_is_final).await
     }
 
     pub async fn download_albums(&mut self, albums: AlbumGroups, directory: &Path, merge: bool) -> Result<(), Error> {
         for uri in albums.current_releases() {
-            self.download_album_by_uri(uri, directory, merge).await?;
+            self.download_album_by_uri(uri, directory, false, merge).await?;
         };
         Ok(())
     }
 
-    pub async fn download_album(&mut self, album: Album, directory: &Path, dir_is_final: bool) -> Result<(), Error> {
-        let dirpath = if dir_is_final { PathBuf::from(directory) } else { directory.join(&album.name) };
+    pub async fn download_album(&mut self, album: Album, directory: &Path, entry_point: bool, dir_is_final: bool) -> Result<(), Error> {
+        let mut dirpath = PathBuf::from(directory);
+        if !dir_is_final {
+            if !entry_point {
+                if let Some(artist) = album.artists.0.get(0) {
+                    dirpath.push(artist.name.clone());
+                }
+            }
+            if album.album_type == AlbumType::SINGLE {
+                dirpath.push(SINGLES_FOLDER);
+            } else {
+                dirpath.push(&album.name);
+            }
+        }
         info!("<{}> Album \"{}\" will be saved at {:?}", album.id.to_id()?, album.name, dirpath);
         self.download_tracks(album.tracks(), &dirpath).await?;
         Ok(())
@@ -215,7 +229,11 @@ impl Downloader {
     pub async fn download_track_by_id(&mut self, id: SpotifyId, directory: &Path) -> Result<(), Error> {
         let uri = SpotifyUri::Track { id };
         let track = Track::get(&self.session, &uri).await?;
-        let dirpath = PathBuf::from(directory);
+        let mut dirpath = PathBuf::from(directory);
+        if let Some(artist) = track.album.artists.0.get(0) {
+            dirpath.push(artist.name.clone());
+        }
+        dirpath.push(SINGLES_FOLDER);
         self.download_track(&track, &dirpath).await
     }
 
@@ -368,8 +386,9 @@ async fn main() -> Result<(), Error> {
     
     let mut downloader = Downloader::new(Arc::new(session));
 
-    let base_path = "downloads";
-    let directory: PathBuf = PathBuf::from(base_path);
+    // let base_path = "downloads";
+    // let directory: PathBuf = PathBuf::from(base_path);
+    let directory: PathBuf = PathBuf::from("C:\\Users\\konge\\Desktop\\Music\\Music\\Trap");
     while downloader.download_from_stdin(&directory).await.is_ok() {}
 
     Ok(())
