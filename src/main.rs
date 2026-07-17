@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, fs::{self, File, create_dir_all}, io::{self, Seek, SeekFrom, copy}, path::{Path, PathBuf}, process::exit, sync::Arc
+    collections::HashMap, fs::{self, File, create_dir_all, remove_file}, io::{self, Seek, SeekFrom, copy}, path::{Path, PathBuf}, process::exit, sync::Arc
 };
 use librespot::{
     audio::{AudioDecrypt, AudioFile}, core::{
@@ -23,12 +23,22 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
+    root_folder: String,
+    singles_folder: String,
+    default_genre: String,
+    artist_genres: HashMap<String, String>,
     exclude: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { exclude: Vec::new() }
+        Self {
+            root_folder: "downloads".to_string(),
+            singles_folder: "Singles".to_string(),
+            default_genre: "Generic".to_string(),
+            artist_genres: HashMap::new(),
+            exclude: Vec::new(),
+        }
     }
 }
 
@@ -108,34 +118,58 @@ fn format_data_rate(format: AudioFileFormat) -> usize {
     data_rate.ceil() as usize
 }
 
-const SINGLES_FOLDER: &'static str = "Singles";
-const BASE_PATH: &'static str = "C:\\Users\\konge\\Desktop\\Music\\Music\\Trap";
+type FileOccurences = HashMap<String, Vec<PathBuf>>;
 
-fn file_exists_with_any_extension(path: &Path, filename: &str) -> bool {
+fn collect_file_occurences<F>(path: &Path, filter: &F) -> FileOccurences
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut occurences = FileOccurences::new();
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
             let file_path = entry.path();
-            if let Some(stem) = file_path.file_stem() {
-                if stem == filename {
-                    return true;
+            if file_path.is_dir() {
+                let nested = collect_file_occurences(&file_path, filter);
+                for (file, folders) in nested {
+                    occurences
+                        .entry(file)
+                        .or_default()
+                        .extend(folders);
+                }
+            } else if let Some(stem) = file_path.file_stem().and_then(|s| s.to_str()) {
+                if let Some(filtered_stem) = filter(stem) {
+                    occurences
+                        .entry(filtered_stem)
+                        .or_default()
+                        .push(file_path);
                 }
             }
         }
     }
-    false
+    occurences
 }
 
-fn get_track_path(track: &Track) -> PathBuf {
-    let mut dirpath = PathBuf::from(BASE_PATH);
-    if let Some(artist) = track.album.artists.0.get(0) {
-        dirpath.push(artist.name.clone());
+fn remove_bracketed_content(input: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut depth = 0;
+    for c in input.chars() {
+        match c {
+            '(' | '[' => {
+                depth += 1;
+            }
+            ')' | ']' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            _ => {
+                if depth == 0 {
+                    result.push(c);
+                }
+            }
+        }
     }
-    if track.album.album_type == AlbumType::SINGLE {
-        dirpath.push(SINGLES_FOLDER);
-    } else {
-        dirpath.push(&track.album.name);
-    }
-    dirpath
+    Some(result)
 }
 
 pub struct Cover {
@@ -147,14 +181,19 @@ pub struct Downloader {
     pub config: Arc<Config>,
     pub session: Arc<Session>,
     pub album_cover_cache: Arc<RwLock<HashMap<String, Arc<Cover>>>>,
+    pub current_genre: Option<String>,
+    pub current_occurences: FileOccurences,
 }
 
 impl Downloader {
     pub fn new(session: Arc<Session>) -> Self {
+        let config = load_config().unwrap_or_else(|_| Config::default());
         Self {
-            config: Arc::new(load_config().unwrap_or_else(|_| Config::default())),
+            config: Arc::new(config),
             session,
             album_cover_cache: Arc::new(RwLock::new(HashMap::new())),
+            current_genre: None,
+            current_occurences: FileOccurences::new(),
         }
     }
 
@@ -202,7 +241,7 @@ impl Downloader {
     }
 
     pub async fn download_playlist(&mut self, album: Playlist) -> Result<(), Error> {
-        info!("<{}> Downloading Playlist \"{}\"", album.id.to_id()?, album.name());
+        info!("<{}> Playlist Download \"{}\"", album.id.to_id()?, album.name());
         self.download_tracks(album.tracks()).await
     }
 
@@ -213,9 +252,16 @@ impl Downloader {
     }
 
     pub async fn download_artist(&mut self, artist: Artist) -> Result<(), Error> {
-        info!("<{}> Downloading Artist \"{}\"", artist.id.to_id()?, artist.name);
+        info!("<{}> Artist Download \"{}\"", artist.id.to_id()?, artist.name);
+        let genre = self.get_artist_genre(Some(&artist));
+        self.current_genre = Some(genre.clone());
+        let mut dirpath = PathBuf::from(self.config.root_folder.clone());
+        dirpath.push(genre);
+        dirpath.push(artist.name.clone());
+        self.current_occurences = collect_file_occurences(&dirpath, &remove_bracketed_content);
         self.download_albums(artist.albums).await?;
         self.download_albums(artist.singles).await?;
+        self.current_genre = None;
         Ok(())
     }
 
@@ -238,10 +284,12 @@ impl Downloader {
     pub async fn download_album(&mut self, album: Album) -> Result<(), Error> {
         let b62id = album.id.to_id()?;
         if self.config.exclude.contains(&b62id) {
-            warn!("<{}> Skipping Album \"{}\" (EXCLUDED)", b62id, album.name);
+            warn!("<{}> Album Skip/Exclude \"{}\"", b62id, album.name);
             Ok(())
         } else {
-            info!("<{}> Downloading Album \"{}\"", b62id, album.name);
+            if album.album_type != AlbumType::SINGLE {
+                info!("<{}> Album Download \"{}\"", b62id, album.name);
+            }
             self.download_tracks(album.tracks()).await
         }
     }
@@ -251,9 +299,9 @@ impl Downloader {
             let track = Track::get(&self.session, track_uri).await?;
             let b62id = track.id.to_id()?;
             if self.config.exclude.contains(&b62id) {
-                warn!("<{}> Skipping Track \"{}\" (EXCLUDED)", b62id, track.name);
+                warn!("<{}> Track Skip/Exclude \"{}\"", b62id, track.name);
             } else if let Err(e) = self.download_track(&track).await {
-                error!("<{}> Failed to download track {} ({:?})", b62id, track.name, e);
+                error!("<{}> Track Fail {} ({:?})", b62id, track.name, e);
             };
         };
         Ok(())
@@ -265,31 +313,79 @@ impl Downloader {
         self.download_track(&track).await
     }
 
-    pub async fn download_track(&mut self, track: &Track) -> Result<(), Error> {
-        let artists_string = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
-        let file_stem = format!("{} - {} ({})", artists_string, track.name, track.id.to_id()?);
-        let dirpath = get_track_path(track);
-        if file_exists_with_any_extension(&dirpath, file_stem.as_str()) {
-            warn!("<{}> Skipping Track #{}: \"{}\" (File Stem Already Exists)", track.id.to_id()?, track.number, track.name);
-            return Ok(());
-        }
+    fn get_artist_genre(&self, artist: Option<&Artist>) -> String {
+        self.current_genre.clone().unwrap_or_else(|| {
+            if let Some(b62id) = artist.and_then(|a| a.id.to_id().ok()) {
+                self.config.artist_genres
+                    .get(&b62id)
+                    .unwrap_or(&self.config.default_genre)
+                    .clone()
+            } else {
+                self.config.default_genre.clone()
+            }
+        })
+    }
 
-        let track_id = match track.id {
-            SpotifyUri::Track { id } => id,
+    fn get_track_path(&self, track: &Track) -> PathBuf {
+        let mut dirpath = PathBuf::from(self.config.root_folder.clone());
+        if let Some(artist) = track.album.artists.0.get(0) {
+            dirpath.push(self.get_artist_genre(Some(artist)));
+            dirpath.push(artist.name.clone());
+        }
+        if track.album.album_type == AlbumType::SINGLE {
+            dirpath.push(self.config.singles_folder.clone());
+        } else {
+            dirpath.push(&track.album.name);
+        }
+        dirpath
+    }
+
+    pub async fn download_track(&mut self, track: &Track) -> Result<(), Error> {
+        let (track_id, b62id) = match track.id {
+            SpotifyUri::Track { id } => (id, id.to_base62()?),
             _ => return Ok(()),
         };
+        let artists_string = track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
+        let track_basename = format!("{} - {} ", artists_string, track.name);
+        let file_stem = format!("{}({})", &track_basename, b62id);
+        let dirpath = self.get_track_path(track);
+
+        if let Some(occurences) = self.current_occurences.get(&track_basename) {
+            if occurences.len() > 2 {
+                warn!("<{}-{}> Track Skip/Multiple: \"{}\"", b62id, track.number, track.name);
+                return Ok(())
+            } else if occurences.len() > 0 {
+                for path in occurences {
+                    if let Some(path_str) = path.to_str() {
+                        let is_occurence_single = path_str.contains(&self.config.singles_folder);
+                        let is_current_single = track.album.album_type == AlbumType::SINGLE;
+                        if is_occurence_single == is_current_single {
+                            warn!("<{}-{} > Track Skip/Exists \"{}\"", b62id, track.number, track.name);
+                        } else if is_occurence_single {
+                            match remove_file(&path) {
+                                Ok(_) => warn!("<{}-{}> Track Remove/Duplicate \"{}\"", b62id, track.number, path_str),
+                                Err(_) => error!("<{}-{}> Track Fail/Remove \"{}\"", b62id, track.number, path_str),
+                            }
+                        }
+                    }
+                }
+            }
+            if occurences.len() > 1 {
+                return Ok(());
+            }
+        }
 
         let fids = track.files
             .keys()
             .map(|f| format!("{:?}", f))
             .collect::<Vec<_>>()
             .join(", ");
-        debug!("<{}> Has formats: {}", track.id.to_id().is_ok(), fids);
+        debug!("<{}-{}> Track Format/Available: {}", b62id, track.number, fids);
 
         let (format, file_id) = FORMAT_PREFERENCE.iter()
             .find_map(|&format| track.files.get(&format).map(|id| (format, id)))
             .ok_or_else(|| Error::failed_precondition("No format available"))?;
-        debug!("<{}> Selected format: {:?}", track.id.to_id().is_ok(), format);
+        debug!("<{}-{}> Track Format/Selected: {:?}", b62id, track.number, format);
 
         let file_extension = get_extension_from_format(format);
         let filename = format!("{}.{}", file_stem, file_extension);
@@ -297,7 +393,7 @@ impl Downloader {
         let filename = filename.chars().take(200).collect::<String>();
         let filepath = dirpath.join(filename);
         if filepath.exists() {
-            warn!("<{}> Skipping Track #{}: \"{}\" (File Already Exists)", track.id.to_id()?, track.number, track.name);
+            warn!("<{}-{}> Track Skip/Exists \"{}\"", b62id, track.number, track.name);
             return Ok(());
         }
 
@@ -311,7 +407,7 @@ impl Downloader {
         create_dir_all(dirpath)?;
         let mut outfile = File::create(&filepath)?;
         copy(&mut decrypted_file, &mut outfile)?;
-        info!("<{}> Saved Track #{}: \"{}\" to {:?}", track.id.to_id()?, track.number, track.name, filepath);
+        info!("<{}-{}> Track Save \"{:?}\"", b62id, track.number, filepath);
         
         let tag_type = match file_extension {
             "ogg" | "flac" => TagType::VorbisComments,
@@ -322,6 +418,7 @@ impl Downloader {
     }
 
     async fn apply_tag(&mut self, track: &Track, tag_type: TagType, filepath: &Path, artists_string: String) -> Result<(), Error> {
+        let b62id = track.id.to_id()?;
         let mut tag = Tag::new(tag_type);
         tag.insert(TagItem::new(ItemKey::TrackTitle, ItemValue::Text(track.name.clone())));
         tag.insert(TagItem::new(ItemKey::AlbumTitle, ItemValue::Text(track.album.name.clone())));
@@ -334,9 +431,9 @@ impl Downloader {
         tag.push_picture(picture);
 
         if let Err(e) = tag.save_to_path(&filepath, WriteOptions::default()) {
-            warn!("<{}> Unable to write metadata to {:?}: {}", track.id.to_id()?, filepath, e);
+            warn!("<{}-{}> Track Metadata/Fail \"{:?}\": {}", b62id, track.number, filepath, e);
         } else {
-            debug!("<{}> Metadata written to {:?}", track.id.to_id()?, filepath);
+            debug!("<{}-{}> Metadata written to {:?}", b62id, track.number, filepath);
         }
 
         Ok(())
