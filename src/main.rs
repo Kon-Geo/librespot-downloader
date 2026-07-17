@@ -26,8 +26,8 @@ pub struct Config {
     root_folder: String,
     singles_folder: String,
     default_genre: String,
-    artist_genres: HashMap<String, String>,
-    exclude: Vec<String>,
+    artist_genres: HashMap<String, Vec<String>>,
+    exclude: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -37,7 +37,7 @@ impl Default for Config {
             singles_folder: "Singles".to_string(),
             default_genre: "Generic".to_string(),
             artist_genres: HashMap::new(),
-            exclude: Vec::new(),
+            exclude: HashMap::new(),
         }
     }
 }
@@ -283,7 +283,7 @@ impl Downloader {
 
     pub async fn download_album(&mut self, album: Album) -> Result<(), Error> {
         let b62id = album.id.to_id()?;
-        if self.config.exclude.contains(&b62id) {
+        if self.config.exclude.contains_key(&b62id) {
             warn!("<{}> Album Skip/Exclude \"{}\"", b62id, album.name);
             Ok(())
         } else {
@@ -298,7 +298,7 @@ impl Downloader {
         for track_uri in tracks {
             let track = Track::get(&self.session, track_uri).await?;
             let b62id = track.id.to_id()?;
-            if self.config.exclude.contains(&b62id) {
+            if self.config.exclude.contains_key(&b62id) {
                 warn!("<{}> Track Skip/Exclude \"{}\"", b62id, track.name);
             } else if let Err(e) = self.download_track(&track).await {
                 error!("<{}> Track Fail {} ({:?})", b62id, track.name, e);
@@ -318,6 +318,7 @@ impl Downloader {
             if let Some(b62id) = artist.and_then(|a| a.id.to_id().ok()) {
                 self.config.artist_genres
                     .get(&b62id)
+                    .and_then(|v| v.get(0))
                     .unwrap_or(&self.config.default_genre)
                     .clone()
             } else {
