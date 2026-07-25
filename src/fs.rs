@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+
 pub type FileOccurences = HashMap<String, Vec<PathBuf>>;
 
 pub fn collect_file_occurences<F>(path: &Path, filter: &F) -> FileOccurences
@@ -50,3 +51,15 @@ pub fn remove_bracketed_content(input: &str) -> Option<String> {
     }
     Some(result)
 }
+
+pub struct FileDB {
+    pub files: FileOccurences,
+    pub tracked_artists: Vec<String>,
+}
+
+impl FileDB {
+    pub fn new() -> Self {
+        Self { files: FileOccurences::new(), tracked_artists: Vec::new() }
+    }
+}
+

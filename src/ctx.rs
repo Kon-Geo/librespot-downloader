@@ -1,13 +1,12 @@
 use std::{collections::HashMap, sync::{Arc, RwLock}};
 use librespot::core::Session;
-use crate::{config::{Config, load_config}, cover::Cover, fs::FileOccurences};
+use crate::{config::{Config, load_config}, cover::Cover, fs::FileDB};
 
 pub struct DLContext {
     pub config: Arc<Config>,
     pub session: Arc<Session>,
     pub covers: Arc<RwLock<HashMap<String, Arc<Cover>>>>,
-    pub genre: Option<String>,
-    pub occurences: FileOccurences,
+    pub filedb: FileDB,
 }
 
 impl DLContext {
@@ -17,8 +16,7 @@ impl DLContext {
             config: Arc::new(config),
             session,
             covers: Arc::new(RwLock::new(HashMap::new())),
-            genre: None,
-            occurences: FileOccurences::new(),
+            filedb: FileDB::new(),
         }
     }
 }

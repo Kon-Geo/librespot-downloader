@@ -1,7 +1,6 @@
-use std::{path::PathBuf};
 use librespot::{core::{Error, SpotifyId, SpotifyUri}, metadata::{Album, Artist, Metadata, Playlist, Track, album::AlbumType, artist::AlbumGroups}};
 use log::{error, info, warn};
-use crate::{ctx::DLContext, fs::{collect_file_occurences, remove_bracketed_content}, metadata::{TrackExt, get_artist_genre}};
+use crate::{ctx::DLContext, metadata::{TrackExt}};
 
 pub(crate) trait Downloadable {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error>;
@@ -54,15 +53,8 @@ impl Downloadable for Playlist {
 impl Downloadable for Artist {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         info!("<{}> Artist Download \"{}\"", self.id.to_id()?, self.name);
-        let genre = get_artist_genre(ctx, Some(&self));
-        ctx.genre = Some(genre.clone());
-        let mut dirpath = PathBuf::from(ctx.config.root_folder.clone());
-        dirpath.push(genre);
-        dirpath.push(self.name.clone());
-        ctx.occurences = collect_file_occurences(&dirpath, &remove_bracketed_content);
         self.albums.download(ctx).await?;
         self.singles.download(ctx).await?;
-        ctx.genre = None;
         Ok(())
     }
 }

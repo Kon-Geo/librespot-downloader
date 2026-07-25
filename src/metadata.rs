@@ -3,24 +3,65 @@ use librespot::{audio::{AudioDecrypt, AudioFile}, core::{Error, FileId, SpotifyI
 use log::{error, info, warn, debug};
 use sanitize_filename::sanitize;
 use lofty::{config::WriteOptions, picture::{Picture, PictureType}, tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType}};
-use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format}, cover::get_cover, ctx::DLContext};
+use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format}, cover::get_cover, ctx::DLContext, fs::{collect_file_occurences, remove_bracketed_content}};
 
 pub fn artists_string(track: &Track) -> String {
     track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
 }
 
 pub fn get_artist_genre(ctx: &DLContext, artist: Option<&Artist>) -> String {
-    ctx.genre.clone().unwrap_or_else(|| {
-        if let Some(b62id) = artist.and_then(|a| a.id.to_id().ok()) {
-            ctx.config.artist_genres
-                .get(&b62id)
-                .and_then(|v| v.get(0))
-                .unwrap_or(&ctx.config.default_genre)
-                .clone()
-        } else {
-            ctx.config.default_genre.clone()
+    if let Some(b62id) = artist.and_then(|a| a.id.to_id().ok()) {
+        ArtistExt::get_genre(ctx, &b62id)
+    } else {
+        ctx.config.default_genre.clone()
+    }
+}
+
+pub struct ArtistExt<'a> {
+    ctx: &'a mut DLContext,
+    pub id: SpotifyId,
+    pub b62id: String,
+    pub inner: Artist,
+    pub folder: PathBuf,
+    pub genre: String,
+}
+
+impl<'a> ArtistExt<'a> {
+    pub fn new(ctx: &'a mut DLContext, inner: Artist) -> Option<Self> {
+        let (id, b62id) = Self::id(&inner)?;
+        let genre = Self::get_genre(ctx, &b62id);
+        let folder = Self::get_folder_path(ctx, &inner, &genre);
+        let artist = Self { ctx, id, b62id, inner, genre, folder };
+        Some(artist)
+    }
+
+    pub fn id(artist: &Artist) -> Option<(SpotifyId, String)> {
+        match artist.id {
+            SpotifyUri::Artist { id } => Some((id, id.to_base62().ok()?)),
+            _ => return None,
         }
-    })
+    }
+
+    pub fn get_genre(ctx: &DLContext, b62id: &String) -> String {
+        ctx.config.artist_genres
+            .get(b62id)
+            .and_then(|v| v.get(0))
+            .unwrap_or(&ctx.config.default_genre)
+            .clone()
+    }
+
+    pub fn get_folder_path(ctx: &DLContext, artist: &Artist, genre: &String) -> PathBuf {
+        let mut dirpath = PathBuf::from(ctx.config.root_folder.clone());
+        dirpath.push(genre);
+        dirpath.push(artist.name.clone());
+        dirpath
+    }
+
+    pub fn track_files(&mut self) {
+        let occurences = collect_file_occurences(&self.folder, &remove_bracketed_content);
+        self.ctx.filedb.files.extend(occurences);
+        self.ctx.filedb.tracked_artists.push(self.b62id.clone());
+    }
 }
 
 pub struct TrackFileDescriptor {
@@ -133,8 +174,23 @@ impl<'a> TrackExt<'a> {
         Ok(())
     }
 
-    pub async fn deduplication_check(&self) -> Result<(), Error> {
-        if let Some(occurrences) = self.ctx.occurences.get(&self.file.base) {
+    pub fn track_main_artist(&mut self) -> Result<(), Error> {
+        let artist = self.inner.artists.get(0).ok_or_else(|| Error::unavailable(""))?;
+        let mut artist = ArtistExt::new(self.ctx, artist.clone()).ok_or_else(|| Error::unavailable(""))?;
+        artist.track_files();
+        Ok(())
+    }
+
+    pub fn track_self(&mut self) {
+        self.ctx.filedb.files
+            .entry(self.file.stem.clone())
+            .or_default()
+            .push(self.file.path.clone());
+    }
+
+    pub async fn deduplication_check(&mut self) -> Result<(), Error> {
+        self.track_main_artist()?;
+        if let Some(occurrences) = self.ctx.filedb.files.get(&self.file.base) {
             let len = occurrences.len();
             if len > 2 {
                 warn!("<{}-{}> Track Skip/Multiple: \"{}\"", self.b62id, self.inner.number, self.inner.name);
@@ -192,9 +248,12 @@ impl<'a> TrackExt<'a> {
     }
 
     pub async fn download(&mut self) -> Result<(), Error> {
-        self.deduplication_check().await?;
+        if let Err(_) = self.deduplication_check().await {
+            return Ok(());
+        }
         self.save_audio().await?;
         self.apply_tag().await?;
+        self.track_self();
         Ok(())
     }
 }
