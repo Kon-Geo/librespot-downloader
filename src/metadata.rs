@@ -3,7 +3,7 @@ use librespot::{audio::{AudioDecrypt, AudioFile}, core::{Error, FileId, SpotifyI
 use log::{error, info, warn, debug};
 use sanitize_filename::sanitize;
 use lofty::{config::WriteOptions, picture::{Picture, PictureType}, tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType}};
-use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format}, cover::get_cover, ctx::DLContext, fs::{collect_file_occurences, remove_bracketed_content}};
+use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format}, cover::get_cover, ctx::DLContext};
 
 pub fn artists_string(track: &Track) -> String {
     track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
@@ -17,8 +17,7 @@ pub fn get_artist_genre(ctx: &DLContext, artist: Option<&Artist>) -> String {
     }
 }
 
-pub struct ArtistExt<'a> {
-    ctx: &'a mut DLContext,
+pub struct ArtistExt {
     pub id: SpotifyId,
     pub b62id: String,
     pub inner: Artist,
@@ -26,12 +25,12 @@ pub struct ArtistExt<'a> {
     pub genre: String,
 }
 
-impl<'a> ArtistExt<'a> {
-    pub fn new(ctx: &'a mut DLContext, inner: Artist) -> Result<Self, Error> {
+impl ArtistExt {
+    pub fn new(ctx: &DLContext, inner: Artist) -> Result<Self, Error> {
         let (id, b62id) = Self::id(&inner)?;
         let genre = Self::get_genre(ctx, &b62id);
         let folder = Self::get_folder_path(ctx, &inner, &genre);
-        let artist = Self { ctx, id, b62id, inner, genre, folder };
+        let artist = Self { id, b62id, inner, genre, folder };
         Ok(artist)
     }
 
@@ -56,11 +55,16 @@ impl<'a> ArtistExt<'a> {
         dirpath.push(artist.name.clone());
         dirpath
     }
+}
 
-    pub fn track_files(&mut self) {
-        let occurences = collect_file_occurences(&self.folder, &remove_bracketed_content);
-        self.ctx.filedb.files.extend(occurences);
-        self.ctx.filedb.tracked_artists.push(self.b62id.clone());
+impl<'a> TryFrom<&TrackExt<'a>> for ArtistExt {
+    type Error = Error;
+    fn try_from(value: &TrackExt<'a>) -> Result<Self, Self::Error> {
+        if let Some(inner) = value.inner.artists.get(0) {
+            Ok(ArtistExt::new(value.ctx, inner.clone())?)
+        } else {
+            Err(Error::unavailable("Artist"))
+        }
     }
 }
 
@@ -103,17 +107,17 @@ impl TrackFileDescriptor {
 }
 
 pub struct AudioFileFormatExt {
-    pub aff: AudioFileFormat,
-    pub fid: FileId,
-    pub tgt: TagType
+    pub format: AudioFileFormat,
+    pub file_id: FileId,
+    pub tag_type: TagType,
 }
 
 impl AudioFileFormatExt {
     pub fn new(track: &Track) -> Result<Self, Error> {
-        let (format, file_id) = Self::select_best_format(track).map(|(f, id)| (f, *id))?;
+        let (format, file_id) = Self::select_best_format(&track).map(|(f, id)| (f, *id))?;
         let tag_type = format_tag_type(format);
-        let format = Self { aff: format, fid: file_id, tgt: tag_type };
-        Ok(format)
+        let affext = Self { format, file_id, tag_type };
+        Ok(affext)
     }
 
     pub fn select_best_format(track: &Track) -> Result<(AudioFileFormat, &FileId), Error> {
@@ -130,6 +134,16 @@ impl AudioFileFormatExt {
         debug!("<{}-{}> Format Selected: {:?}", b62id, track.number, format);
         Ok((format, file_id))
     }
+
+    pub async fn get_audio_file(&self, ctx: &DLContext, id: SpotifyId) -> Result<AudioDecrypt<AudioFile>, Error> {
+        let bytes_per_second = format_data_rate(self.format);
+        let encrypted_file = AudioFile::open(&ctx.session, self.file_id, bytes_per_second).await?;
+        let key = ctx.session.audio_key().request(id, self.file_id).await?;
+        let mut decrypted_file = AudioDecrypt::new(Some(key), encrypted_file);
+        let offset = if AudioFiles::is_ogg_vorbis(self.format) { SPOTIFY_OGG_HEADER_END } else { 0 };
+        decrypted_file.seek(SeekFrom::Start(offset))?;
+        Ok(decrypted_file)
+    }
 }
 
 pub struct TrackExt<'a> {
@@ -145,7 +159,7 @@ impl<'a> TrackExt<'a> {
     pub fn new(ctx: &'a mut DLContext, inner: Track) -> Result<Self, Error> {
         let (id, b62id) = Self::id(&inner)?;
         let format = AudioFileFormatExt::new(&inner)?;
-        let file = TrackFileDescriptor::new(ctx, &inner, format.aff)?;
+        let file = TrackFileDescriptor::new(ctx, &inner, format.format)?;
         let track = Self { ctx, id, b62id, inner, format, file };
         Ok(track)
     }
@@ -157,18 +171,8 @@ impl<'a> TrackExt<'a> {
         }
     }
 
-    pub async fn get_audio_file(&self) -> Result<AudioDecrypt<AudioFile>, Error> {
-        let bytes_per_second = format_data_rate(self.format.aff);
-        let encrypted_file = AudioFile::open(&self.ctx.session, self.format.fid, bytes_per_second).await?;
-        let key = self.ctx.session.audio_key().request(self.id, self.format.fid).await?;
-        let mut decrypted_file = AudioDecrypt::new(Some(key), encrypted_file);
-        let offset = if AudioFiles::is_ogg_vorbis(self.format.aff) { SPOTIFY_OGG_HEADER_END } else { 0 };
-        decrypted_file.seek(SeekFrom::Start(offset))?;
-        Ok(decrypted_file)
-    }
-
     pub async fn save_audio(&self) -> Result<(), Error> {
-        let mut decrypted_file = self.get_audio_file().await?;
+        let mut decrypted_file = self.format.get_audio_file(self.ctx, self.id).await?;
         create_dir_all(self.file.path.parent().unwrap())?;
         let mut outfile = File::create(&self.file.path)?;
         copy(&mut decrypted_file, &mut outfile)?;
@@ -176,24 +180,11 @@ impl<'a> TrackExt<'a> {
         Ok(())
     }
 
-    pub fn track_main_artist(&mut self) -> Result<(), Error> {
-        if let Some(inner) = self.inner.artists.get(0) {
-            let mut artist = ArtistExt::new(self.ctx, inner.clone())?;
-            artist.track_files();
-        }
-        Ok(())
-    }
-
-    pub fn track_self(&mut self) {
-        self.ctx.filedb.files
-            .entry(self.file.stem.clone())
-            .or_default()
-            .push(self.file.path.clone());
-    }
-
     pub async fn deduplication_check(&mut self) -> Result<(), Error> {
-        self.track_main_artist()?;
-        if let Some(occurrences) = self.ctx.filedb.files.get(&self.file.base) {
+        if let Ok(artist) = (&*self).try_into() {
+            self.ctx.filedb.track_artist(&artist);
+        }
+        if let Some(occurrences) = self.ctx.filedb.get(&self.file.base) {
             let len = occurrences.len();
             if len > 2 {
                 warn!("<{}-{}> Track Multiple: \"{}\"", self.b62id, self.inner.number, self.inner.name);
@@ -230,7 +221,7 @@ impl<'a> TrackExt<'a> {
     }
 
     pub async fn apply_tag(&mut self) -> Result<(), Error> {
-        let mut tag = Tag::new(self.format.tgt);
+        let mut tag = Tag::new(self.format.tag_type);
         tag.insert(TagItem::new(ItemKey::TrackTitle, ItemValue::Text(self.inner.name.clone())));
         tag.insert(TagItem::new(ItemKey::AlbumTitle, ItemValue::Text(self.inner.album.name.clone())));
         tag.insert(TagItem::new(ItemKey::TrackArtist, ItemValue::Text(artists_string(&self.inner))));
@@ -256,7 +247,7 @@ impl<'a> TrackExt<'a> {
         }
         self.save_audio().await?;
         self.apply_tag().await?;
-        self.track_self();
+        self.ctx.filedb.track_track(&self.file);
         Ok(())
     }
 }

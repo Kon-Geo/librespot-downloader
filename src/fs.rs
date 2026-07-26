@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use crate::{metadata::{ArtistExt, TrackFileDescriptor}};
 
 pub type FileOccurences = HashMap<String, Vec<PathBuf>>;
 
@@ -53,13 +54,33 @@ pub fn remove_bracketed_content(input: &str) -> Option<String> {
 }
 
 pub struct FileDB {
-    pub files: FileOccurences,
-    pub tracked_artists: Vec<String>,
+    files: FileOccurences,
+    tracked_artists: Vec<String>,
 }
 
 impl FileDB {
     pub fn new() -> Self {
         Self { files: FileOccurences::new(), tracked_artists: Vec::new() }
+    }
+
+    pub fn get(&self, stem: &String) -> Option<&Vec<PathBuf>> {
+        self.files.get(stem)
+    }
+
+    pub fn track_artist(&mut self, artist: &ArtistExt) {
+        if self.tracked_artists.contains(&artist.b62id) {
+            return;
+        }
+        let occurences = collect_file_occurences(&artist.folder, &remove_bracketed_content);
+        self.files.extend(occurences);
+        self.tracked_artists.push(artist.b62id.clone());
+    }
+
+    pub fn track_track(&mut self, file: &TrackFileDescriptor) {
+        self.files
+            .entry(file.stem.clone())
+            .or_default()
+            .push(file.path.clone());
     }
 }
 
