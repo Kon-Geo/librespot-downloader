@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use log::info;
 use crate::{metadata::{ArtistExt, TrackFileDescriptor}};
 
 pub type FileOccurences = HashMap<String, Vec<PathBuf>>;
@@ -71,6 +72,7 @@ impl FileDB {
         if self.tracked_artists.contains(&artist.b62id) {
             return;
         }
+        info!("<{}> Artist Tracking \"{}\"", artist.id, artist.inner.name);
         let occurences = collect_file_occurences(&artist.folder, &remove_bracketed_content);
         self.files.extend(occurences);
         self.tracked_artists.push(artist.b62id.clone());
