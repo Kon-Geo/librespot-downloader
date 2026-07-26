@@ -1,5 +1,5 @@
 use librespot::{core::{Error, SpotifyId, SpotifyUri}, metadata::{Album, Artist, Metadata, Playlist, Track, album::AlbumType, artist::AlbumGroups}};
-use log::{error, info, warn};
+use log::{debug, error, warn};
 use crate::{ctx::DLContext, metadata::{TrackExt}};
 
 pub(crate) trait Downloadable {
@@ -45,14 +45,14 @@ impl GetById<Track> for Track {
 
 impl Downloadable for Playlist {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
-        info!("<{}> Playlist Download \"{}\"", self.id.to_id()?, self.name());
+        debug!("<{}> Playlist Download \"{}\"", self.id.to_id()?, self.name());
         self.tracks().collect::<Vec<_>>().download(ctx).await
     }
 }
 
 impl Downloadable for Artist {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
-        info!("<{}> Artist Download \"{}\"", self.id.to_id()?, self.name);
+        debug!("<{}> Artist Download \"{}\"", self.id.to_id()?, self.name);
         self.albums.download(ctx).await?;
         self.singles.download(ctx).await?;
         Ok(())
@@ -63,11 +63,11 @@ impl Downloadable for Album {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         let b62id = self.id.to_id()?;
         if ctx.config.exclude.contains_key(&b62id) {
-            warn!("<{}> Album Skip/Exclude \"{}\"", b62id, self.name);
+            warn!("<{}> Album Exclude \"{}\"", b62id, self.name);
             Ok(())
         } else {
             if self.album_type != AlbumType::SINGLE {
-                info!("<{}> Album Download \"{}\"", b62id, self.name);
+                debug!("<{}> Album Download \"{}\"", b62id, self.name);
             }
             self.tracks().collect::<Vec<_>>().download(ctx).await
         }
@@ -86,8 +86,7 @@ impl Downloadable for AlbumGroups {
 
 impl Downloadable for Track {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
-        TrackExt::new(ctx, self.clone())
-            .ok_or(Error::unavailable(""))?
+        TrackExt::new(ctx, self.clone())?
             .download()
             .await
     }
@@ -99,7 +98,7 @@ impl Downloadable for Vec<&SpotifyUri> {
             let track = Track::get(&ctx.session, track_uri).await?;
             let b62id = track.id.to_id()?;
             if ctx.config.exclude.contains_key(&b62id) {
-                warn!("<{}> Track Skip/Exclude \"{}\"", b62id, track.name);
+                warn!("<{}> Track Exclude \"{}\"", b62id, track.name);
             } else if let Err(e) = track.download(ctx).await {
                 error!("<{}> Track Fail {} ({:?})", b62id, track.name, e);
             };

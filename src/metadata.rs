@@ -27,18 +27,18 @@ pub struct ArtistExt<'a> {
 }
 
 impl<'a> ArtistExt<'a> {
-    pub fn new(ctx: &'a mut DLContext, inner: Artist) -> Option<Self> {
+    pub fn new(ctx: &'a mut DLContext, inner: Artist) -> Result<Self, Error> {
         let (id, b62id) = Self::id(&inner)?;
         let genre = Self::get_genre(ctx, &b62id);
         let folder = Self::get_folder_path(ctx, &inner, &genre);
         let artist = Self { ctx, id, b62id, inner, genre, folder };
-        Some(artist)
+        Ok(artist)
     }
 
-    pub fn id(artist: &Artist) -> Option<(SpotifyId, String)> {
+    pub fn id(artist: &Artist) -> Result<(SpotifyId, String), Error> {
         match artist.id {
-            SpotifyUri::Artist { id } => Some((id, id.to_base62().ok()?)),
-            _ => return None,
+            SpotifyUri::Artist { id } => Ok((id, id.to_base62()?)),
+            _ => return Err(Error::failed_precondition("Invalid Artist ID")),
         }
     }
 
@@ -73,8 +73,8 @@ pub struct TrackFileDescriptor {
 }
 
 impl TrackFileDescriptor {
-    pub fn new(ctx: &DLContext, track: &Track, format: AudioFileFormat) -> Option<Self> {
-        let b62id = track.id.to_id().ok()?;
+    pub fn new(ctx: &DLContext, track: &Track, format: AudioFileFormat) -> Result<Self, Error> {
+        let b62id = track.id.to_id()?;
         let basepath = Self::get_track_path(ctx, &track);
         let base = format!("{} - {} ", artists_string(&track), track.name);
         let stem = format!("{}({})", base, b62id);
@@ -83,7 +83,8 @@ impl TrackFileDescriptor {
         let name = sanitize(name);
         let name = name.chars().take(200).collect::<String>();
         let path = basepath.join(&name);
-        Some(Self { base, stem, extension, name, path })
+        let file = Self { base, stem, extension, name, path };
+        Ok(file)
     }
 
     pub fn get_track_path(ctx: &DLContext, track: &Track) -> PathBuf {
@@ -108,10 +109,11 @@ pub struct AudioFileFormatExt {
 }
 
 impl AudioFileFormatExt {
-    pub fn new(track: &Track) -> Option<Self> {
-        let (format, file_id) = Self::select_best_format(track).ok().map(|(f, id)| (f, *id))?;
+    pub fn new(track: &Track) -> Result<Self, Error> {
+        let (format, file_id) = Self::select_best_format(track).map(|(f, id)| (f, *id))?;
         let tag_type = format_tag_type(format);
-        Some(Self { aff: format, fid: file_id, tgt: tag_type })
+        let format = Self { aff: format, fid: file_id, tgt: tag_type };
+        Ok(format)
     }
 
     pub fn select_best_format(track: &Track) -> Result<(AudioFileFormat, &FileId), Error> {
@@ -121,11 +123,11 @@ impl AudioFileFormatExt {
             .map(|f| format!("{:?}", f))
             .collect::<Vec<_>>()
             .join(", ");
-        debug!("<{}-{}> Track Format/Available: {}", b62id, track.number, fids);
+        debug!("<{}-{}> Format Available: {}", b62id, track.number, fids);
         let (format, file_id) = FORMAT_PREFERENCE.iter()
             .find_map(|&format| track.files.get(&format).map(|id| (format, id)))
             .ok_or_else(|| Error::failed_precondition("No format available"))?;
-        debug!("<{}-{}> Track Format/Selected: {:?}", b62id, track.number, format);
+        debug!("<{}-{}> Format Selected: {:?}", b62id, track.number, format);
         Ok((format, file_id))
     }
 }
@@ -140,18 +142,18 @@ pub struct TrackExt<'a> {
 }
 
 impl<'a> TrackExt<'a> {
-    pub fn new(ctx: &'a mut DLContext, inner: Track) -> Option<Self> {
+    pub fn new(ctx: &'a mut DLContext, inner: Track) -> Result<Self, Error> {
         let (id, b62id) = Self::id(&inner)?;
         let format = AudioFileFormatExt::new(&inner)?;
         let file = TrackFileDescriptor::new(ctx, &inner, format.aff)?;
         let track = Self { ctx, id, b62id, inner, format, file };
-        Some(track)
+        Ok(track)
     }
 
-    pub fn id(track: &Track) -> Option<(SpotifyId, String)> {
+    pub fn id(track: &Track) -> Result<(SpotifyId, String), Error> {
         match track.id {
-            SpotifyUri::Track { id } => Some((id, id.to_base62().ok()?)),
-            _ => return None,
+            SpotifyUri::Track { id } => Ok((id, id.to_base62()?)),
+            _ => return Err(Error::failed_precondition("Invalid Track ID")),
         }
     }
 
@@ -170,14 +172,15 @@ impl<'a> TrackExt<'a> {
         create_dir_all(self.file.path.parent().unwrap())?;
         let mut outfile = File::create(&self.file.path)?;
         copy(&mut decrypted_file, &mut outfile)?;
-        info!("<{}-{}> Track Save \"{:?}\"", self.b62id, self.inner.number, self.file.path);
+        info!("<{}-{}> Track Save \"{}\"", self.b62id, self.inner.number, self.inner.name);
         Ok(())
     }
 
     pub fn track_main_artist(&mut self) -> Result<(), Error> {
-        let artist = self.inner.artists.get(0).ok_or_else(|| Error::unavailable(""))?;
-        let mut artist = ArtistExt::new(self.ctx, artist.clone()).ok_or_else(|| Error::unavailable(""))?;
-        artist.track_files();
+        if let Some(inner) = self.inner.artists.get(0) {
+            let mut artist = ArtistExt::new(self.ctx, inner.clone())?;
+            artist.track_files();
+        }
         Ok(())
     }
 
@@ -193,8 +196,8 @@ impl<'a> TrackExt<'a> {
         if let Some(occurrences) = self.ctx.filedb.files.get(&self.file.base) {
             let len = occurrences.len();
             if len > 2 {
-                warn!("<{}-{}> Track Skip/Multiple: \"{}\"", self.b62id, self.inner.number, self.inner.name);
-                return Err(Error::already_exists(""));
+                warn!("<{}-{}> Track Multiple: \"{}\"", self.b62id, self.inner.number, self.inner.name);
+                return Err(Error::already_exists("Multiple Occurences"));
             }
             for path in occurrences {
                 let Some(path_str) = path.to_str() else {
@@ -203,24 +206,24 @@ impl<'a> TrackExt<'a> {
                 let occurrence_single = path_str.contains(&self.ctx.config.singles_folder);
                 let current_single = self.inner.album.album_type == AlbumType::SINGLE;
                 if occurrence_single == current_single {
-                    warn!("<{}-{} > Track Skip/Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
-                    return Err(Error::already_exists(""));
+                    warn!("<{}-{}> Track Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
+                    return Err(Error::already_exists("Album Version"));
                 }
                 if occurrence_single {
                     return match remove_file(path) {
                         Ok(_) => {
-                            warn!("<{}-{}> Track Remove/Duplicate \"{}\"", self.b62id, self.inner.number, path_str);
+                            warn!("<{}-{}> Remove Duplicate \"{}\"", self.b62id, self.inner.number, path_str);
                             Ok(())
                         }
                         Err(_) => {
-                            error!("<{}-{}> Track Fail/Remove \"{}\"", self.b62id, self.inner.number, path_str);
-                            Err(Error::unavailable(""))
+                            error!("<{}-{}> Remove Fail \"{}\"", self.b62id, self.inner.number, path_str);
+                            Err(Error::unavailable("Remove Duplicate"))
                         }
                     };
                 }
             }
             if len > 1 {
-                return Err(Error::already_exists(""));
+                return Err(Error::already_exists("Single Version"));
             }
         }
         Ok(())
@@ -239,9 +242,9 @@ impl<'a> TrackExt<'a> {
         tag.push_picture(picture);
 
         if let Err(e) = tag.save_to_path(&self.file.path, WriteOptions::default()) {
-            warn!("<{}-{}> Track Metadata/Fail \"{:?}\": {}", self.b62id, self.inner.number, self.file.path, e);
+            warn!("<{}-{}> Metadata Fail \"{}\": {}", self.b62id, self.inner.number, self.inner.name, e);
         } else {
-            debug!("<{}-{}> Metadata written to {:?}", self.b62id, self.inner.number, self.file.path);
+            debug!("<{}-{}> Metadata Write \"{}\"", self.b62id, self.inner.number, self.inner.name);
         }
 
         Ok(())

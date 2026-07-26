@@ -25,13 +25,13 @@ pub async fn get_cover(ctx: &mut DLContext, track: &Track) -> Result<Arc<Cover>,
         .ok_or_else(|| Error::failed_precondition("Album has no cover"))?;
     let cover_id = cover.id.to_string();
     {
-        let cache = ctx.covers.read().map_err(|_| Error::unavailable(""))?;
+        let cache = ctx.covers.read().map_err(|_| Error::unavailable("Cover Cache Check"))?;
         if let Some(cover) = cache.get(&cover_id) {
             return Ok(Arc::clone(cover));
         }
     }
     download_cover(ctx, &cover_id).await?;
-    let cache = ctx.covers.read().map_err(|_| Error::unavailable(""))?;
+    let cache = ctx.covers.read().map_err(|_| Error::unavailable("Cover Cache Read"))?;
     Ok(Arc::clone(cache.get(&cover_id).unwrap()))
 }   
 
@@ -48,7 +48,7 @@ pub async fn download_cover(ctx: &mut DLContext, id: &String) -> Result<(), Erro
             .map(|t| MimeType::from_str(t.mime_type()))
             .unwrap_or(MimeType::Jpeg),
     });
-    let mut cache = ctx.covers.write().map_err(|_| Error::unavailable(""))?;
+    let mut cache = ctx.covers.write().map_err(|_| Error::unavailable("Cover Cache Write"))?;
     cache.insert(id.to_owned(), cover);
     Ok(())
 }
