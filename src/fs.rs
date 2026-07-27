@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use crate::metadata::TrackFileDescriptor;
 
 pub type FileOccurences = HashMap<String, Vec<PathBuf>>;
 
@@ -61,4 +62,31 @@ impl FileDB {
     pub fn new() -> Self {
         Self { files: FileOccurences::new(), tracked_artists: Vec::new() }
     }
+
+    pub fn remove_occurrence(&mut self, name: &str, path: &Path) {
+        if let Some(paths) = self.files.get_mut(name) {
+            paths.retain(|p| p != path);
+
+            if paths.is_empty() {
+                self.files.remove(name);
+            }
+        }
+    }
+
+    pub fn track_artist(&mut self, b62id: &String, folder: &Path) {
+        if self.tracked_artists.contains(&b62id) {
+            return;
+        }
+        let occurrences = collect_file_occurences(folder, &remove_bracketed_content);
+        self.files.extend(occurrences);
+        self.tracked_artists.push(b62id.clone());
+    }
+
+    pub fn track_track(&mut self, file: &TrackFileDescriptor) {
+        self.files
+            .entry(file.stem.clone())
+            .or_default()
+            .push(file.path.clone());
+    }
+
 }

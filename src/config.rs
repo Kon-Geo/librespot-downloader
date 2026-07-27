@@ -75,6 +75,16 @@ pub fn get_extension_from_format(format: AudioFileFormat) -> &'static str {
     }
 }
 
+pub fn get_extension_rank(extension: &str) -> i32 {
+    match extension {
+        "flac" => 4,
+        "ogg" => 3,
+        "aac" => 2,
+        "mp3" => 1,
+        _ => 0,
+    }
+}
+
 pub fn format_data_rate(format: AudioFileFormat) -> usize {
     let kbps = match format {
         AudioFileFormat::OGG_VORBIS_96 => 12.,

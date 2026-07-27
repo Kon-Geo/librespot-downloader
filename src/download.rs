@@ -8,10 +8,10 @@ pub(crate) trait Downloadable {
 
 pub(crate) trait GetById<S: Metadata + Downloadable> {
     fn uri_from_id(id: SpotifyId) -> SpotifyUri;
-    async fn get_by_uri(ctx: &mut DLContext, uri: &SpotifyUri) -> Result<S, Error> {
+    async fn get_by_uri(ctx: &DLContext, uri: &SpotifyUri) -> Result<S, Error> {
         S::get(&ctx.session, &uri).await
     }
-    async fn get_by_id(ctx: &mut DLContext, id: SpotifyId) -> Result<S, Error> {
+    async fn get_by_id(ctx: &DLContext, id: SpotifyId) -> Result<S, Error> {
         Self::get_by_uri(ctx, &Self::uri_from_id(id)).await
     }
     async fn download_by_id(ctx: &mut DLContext, id: SpotifyId) -> Result<(), Error> {
@@ -87,7 +87,7 @@ impl Downloadable for AlbumGroups {
 impl Downloadable for Track {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         TrackExt::new(ctx, self.clone())?
-            .download()
+            .download(ctx)
             .await
     }
 }
