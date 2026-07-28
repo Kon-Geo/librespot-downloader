@@ -196,23 +196,27 @@ impl TrackExt {
             }
         }
         let mut download = false;
-        if let Some(occurrences) = ctx.filedb.files.get(&self.file.base).cloned() {
-            let current_score = self.file.get_score(&ctx.config.singles_folder);
-            for file in occurrences {
-                let file_score = file.get_score(&ctx.config.singles_folder);
-                if current_score <= file_score { continue; }
-                download = true;
-                match remove_file(&file.path) {
-                    Ok(_) => {
-                        ctx.filedb.remove_occurrence(&self.file.base, &file.path);
-                        warn!("<{}-{}> Remove Duplicate \"{:?}\"", self.b62id, self.inner.number, file.path);
-                    }
-                    Err(_) => {
-                        error!("<{}-{}> Remove Fail \"{:?}\"", self.b62id, self.inner.number, file.path);
-                    }
-                };
-            }
+        let Some(occurrences) = ctx.filedb.files.get(&self.file.base).cloned() else {
+            return true;
         };
+        let current_score = self.file.get_score(&ctx.config.singles_folder);
+        for file in occurrences {
+            let file_score = file.get_score(&ctx.config.singles_folder);
+            if current_score <= file_score { continue; }
+            download = true;
+            match remove_file(&file.path) {
+                Ok(_) => {
+                    ctx.filedb.remove_occurrence(&self.file.base, &file.path);
+                    warn!("<{}-{}> Remove Duplicate \"{:?}\"", self.b62id, self.inner.number, file.path);
+                }
+                Err(_) => {
+                    error!("<{}-{}> Remove Fail \"{:?}\"", self.b62id, self.inner.number, file.path);
+                }
+            };
+        }
+        if !download {
+            warn!("<{}-{}> Track Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
+        }
         download
     }
 
@@ -239,7 +243,6 @@ impl TrackExt {
 
     pub async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         if !self.deduplication_check(ctx).await {
-            warn!("<{}-{}> Track Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
             return Ok(());
         }
         self.save_audio(ctx).await?;

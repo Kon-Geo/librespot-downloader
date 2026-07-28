@@ -77,6 +77,7 @@ pub fn get_extension_from_format(format: AudioFileFormat) -> &'static str {
 
 pub fn get_extension_rank(extension: &str) -> i32 {
     match extension {
+        "m4a" => 5,
         "flac" => 4,
         "ogg" => 3,
         "aac" => 2,
