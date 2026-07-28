@@ -3,7 +3,7 @@ use librespot::{audio::{AudioDecrypt, AudioFile}, core::{Error, FileId, SpotifyI
 use log::{error, info, warn, debug};
 use sanitize_filename::sanitize;
 use lofty::{config::WriteOptions, picture::{Picture, PictureType}, tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType}};
-use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format}, ctx::DLContext};
+use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format, get_extension_rank}, ctx::DLContext};
 
 pub fn artists_string(track: &Track) -> String {
     track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
@@ -64,12 +64,13 @@ impl ArtistExt {
     }
 }
 
+#[derive(Clone)]
 pub struct TrackFileDescriptor {
     pub base: String,
     pub stem: String,
     pub extension: String,
     pub name: String,
-    pub path: PathBuf
+    pub path: PathBuf,
 }
 
 impl TrackFileDescriptor {
@@ -99,6 +100,19 @@ impl TrackFileDescriptor {
             dirpath.push(&track.album.name);
         }
         dirpath
+    }
+
+    pub fn get_score(&self, singles_folder: &String) -> i32 {
+        let mut score: i32 = 0;
+        if let Some(extension) = self.path.extension().and_then(|s| s.to_str()) {
+            score += get_extension_rank(extension);
+        }
+        if let Some(path_str) = self.path.to_str() {
+            if !path_str.contains(singles_folder) {
+                score += 10;
+            }
+        }
+        score
     }
 }
 
@@ -175,48 +189,31 @@ impl TrackExt {
         Ok(())
     }
 
-    pub async fn deduplication_check(&self, ctx: &mut DLContext) -> Result<(), Error> {
+    pub async fn deduplication_check(&self, ctx: &mut DLContext) -> bool {
         if let Some(inner) = self.inner.artists.get(0) {
             if let Ok(artist) = ArtistExt::new(ctx, inner.clone()) {
                 artist.track(ctx);
             }
         }
-        let occurrences = ctx.filedb.files.get(&self.file.base).cloned();
-        if let Some(occurrences) = occurrences {
-            let len = occurrences.len();
-            if len > 2 {
-                error!("<{}-{}> Track Multiple: \"{}\"", self.b62id, self.inner.number, self.inner.name);
-                return Err(Error::already_exists("Multiple Occurences"));
-            }
-            for path in occurrences {
-                let Some(path_str) = path.to_str() else {
-                    continue;
+        let mut download = false;
+        if let Some(occurrences) = ctx.filedb.files.get(&self.file.base).cloned() {
+            let current_score = self.file.get_score(&ctx.config.singles_folder);
+            for file in occurrences {
+                let file_score = file.get_score(&ctx.config.singles_folder);
+                if current_score <= file_score { continue; }
+                download = true;
+                match remove_file(&file.path) {
+                    Ok(_) => {
+                        ctx.filedb.remove_occurrence(&self.file.base, &file.path);
+                        warn!("<{}-{}> Remove Duplicate \"{:?}\"", self.b62id, self.inner.number, file.path);
+                    }
+                    Err(_) => {
+                        error!("<{}-{}> Remove Fail \"{:?}\"", self.b62id, self.inner.number, file.path);
+                    }
                 };
-                let occurrence_single = path_str.contains(&ctx.config.singles_folder);
-                let current_single = self.inner.album.album_type == AlbumType::SINGLE;
-                if occurrence_single == current_single {
-                    warn!("<{}-{}> Track Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
-                    return Err(Error::already_exists("Album Version"));
-                }
-                if occurrence_single {
-                    return match remove_file(&path) {
-                        Ok(_) => {
-                            ctx.filedb.remove_occurrence(&self.file.base, &path);
-                            warn!("<{}-{}> Remove Duplicate \"{}\"", self.b62id, self.inner.number, path_str);
-                            Ok(())
-                        }
-                        Err(_) => {
-                            error!("<{}-{}> Remove Fail \"{}\"", self.b62id, self.inner.number, path_str);
-                            Err(Error::unavailable("Remove Duplicate"))
-                        }
-                    };
-                }
             }
-            if len > 1 {
-                return Err(Error::already_exists("Single Version"));
-            }
-        }
-        Ok(())
+        };
+        download
     }
 
     pub async fn apply_tag(&self, ctx: &mut DLContext) -> Result<(), Error> {
@@ -241,12 +238,13 @@ impl TrackExt {
     }
 
     pub async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
-        if let Err(_) = self.deduplication_check(ctx).await {
+        if !self.deduplication_check(ctx).await {
+            warn!("<{}-{}> Track Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
             return Ok(());
         }
         self.save_audio(ctx).await?;
         self.apply_tag(ctx).await?;
-        ctx.filedb.track_track(&self.file);
+        ctx.filedb.track_track(self.file.clone());
         Ok(())
     }
 }

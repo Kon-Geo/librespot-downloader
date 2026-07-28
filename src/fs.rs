@@ -1,7 +1,7 @@
-use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use std::{collections::HashMap, fs, path::Path};
 use crate::metadata::TrackFileDescriptor;
 
-pub type FileOccurences = HashMap<String, Vec<PathBuf>>;
+pub type FileOccurences = HashMap<String, Vec<TrackFileDescriptor>>;
 
 pub fn collect_file_occurences<F>(path: &Path, filter: &F) -> FileOccurences
 where
@@ -19,13 +19,18 @@ where
             }
             continue;
         }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue; };
+        let Some(base) = filter(stem) else { continue; };
+        let Some(extension) = path.extension().and_then(|s| s.to_str()) else { continue; };
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue; };
+        let file = TrackFileDescriptor {
+            base: base.clone(),
+            stem: stem.to_string(),
+            extension: extension.to_string(),
+            name: name.to_string(),
+            path: path.clone(),
         };
-        let Some(stem) = filter(stem) else {
-            continue;
-        };
-        occurrences.entry(stem).or_default().push(path);
+        occurrences.entry(base).or_default().push(file);
     }
     occurrences
 }
@@ -65,7 +70,7 @@ impl FileDB {
 
     pub fn remove_occurrence(&mut self, name: &str, path: &Path) {
         if let Some(paths) = self.files.get_mut(name) {
-            paths.retain(|p| p != path);
+            paths.retain(|file| file.path != path);
 
             if paths.is_empty() {
                 self.files.remove(name);
@@ -82,11 +87,11 @@ impl FileDB {
         self.tracked_artists.push(b62id.clone());
     }
 
-    pub fn track_track(&mut self, file: &TrackFileDescriptor) {
+    pub fn track_track(&mut self, file: TrackFileDescriptor) {
         self.files
             .entry(file.stem.clone())
             .or_default()
-            .push(file.path.clone());
+            .push(file);
     }
 
 }
