@@ -77,7 +77,9 @@ impl TrackFileDescriptor {
     pub fn new(ctx: &DLContext, track: &Track, format: AudioFileFormat) -> Result<Self, Error> {
         let b62id = track.id.to_id()?;
         let basepath = Self::get_path(ctx, &track);
-        let base = format!("{} - {} ", artists_string(&track), track.name);
+        let track_artists = sanitize(artists_string(&track));
+        let track_name = sanitize(&track.name);
+        let base = format!("{} - {} ", track_artists, track_name);
         let stem = format!("{}({})", base, b62id);
         let extension = get_extension_from_format(format).to_string();
         let name = format!("{}.{}", stem, extension);
@@ -92,12 +94,12 @@ impl TrackFileDescriptor {
         let mut dirpath = PathBuf::from(ctx.config.root_folder.clone());
         if let Some(artist) = track.album.artists.0.get(0) {
             dirpath.push(get_artist_genre(ctx, Some(artist)));
-            dirpath.push(artist.name.clone());
+            dirpath.push(sanitize(artist.name.clone()));
         }
         if track.album.album_type == AlbumType::SINGLE {
             dirpath.push(ctx.config.singles_folder.clone());
         } else {
-            dirpath.push(&track.album.name);
+            dirpath.push(sanitize(&track.album.name));
         }
         dirpath
     }
