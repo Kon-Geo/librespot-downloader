@@ -10,7 +10,7 @@ async fn main() -> Result<(), Error> {
 
     let mut downloader = DLContext::new(session);
 
-    while download_from_stdin(&mut downloader).await.is_ok() {}
+    while download_from_stdin(&mut downloader).await? {}
 
     Ok(())
 }

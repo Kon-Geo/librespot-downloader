@@ -1,18 +1,29 @@
 use std::io;
 use librespot::{core::{Error, SpotifyId}, metadata::{Album, Artist, Playlist, Track}};
-use log::info;
+use log::{error, info};
 
 use crate::{ctx::DLContext, download::GetById};
 
-pub async fn download_from_stdin(ctx: &mut DLContext) -> Result<(), Error> {
-    info!("Enter a Spotify Track/Album/Playlist URL: ");
+/// Reads one line from stdin and downloads it.
+/// Returns `Ok(false)` when the user is done (EOF or a quit command).
+/// Download errors are logged and do not end the session.
+pub async fn download_from_stdin(ctx: &mut DLContext) -> Result<bool, Error> {
+    info!("Enter a Spotify Track/Album/Playlist URL (or 'q' to quit): ");
     let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim();
-    if input.is_empty() {
-        return Ok(());
+    if io::stdin().read_line(&mut input)? == 0 {
+        return Ok(false);
     }
-    download_by_url(ctx, input).await
+    let input = input.trim();
+    match input {
+        "" => Ok(true),
+        "q" | "quit" | "exit" => Ok(false),
+        _ => {
+            if let Err(e) = download_by_url(ctx, input).await {
+                error!("Download Fail \"{}\": {}", input, e);
+            }
+            Ok(true)
+        }
+    }
 }
 
 pub fn parse_url(input: &str) -> Result<(&str, SpotifyId), Error> {
