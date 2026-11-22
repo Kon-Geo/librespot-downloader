@@ -5,6 +5,8 @@ use sanitize_filename::sanitize;
 use lofty::{config::WriteOptions, picture::{Picture, PictureType}, tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType}};
 use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format, get_extension_rank}, ctx::DLContext};
 
+const MAX_FILE_NAME_LEN: usize = 200;
+
 pub fn artists_string(track: &Track) -> String {
     track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
 }
@@ -77,14 +79,14 @@ impl TrackFileDescriptor {
     pub fn new(ctx: &DLContext, track: &Track, format: AudioFileFormat) -> Result<Self, Error> {
         let b62id = track.id.to_id()?;
         let basepath = Self::get_path(ctx, &track);
-        let track_artists = sanitize(artists_string(&track));
-        let track_name = sanitize(&track.name);
-        let base = format!("{} - {} ", track_artists, track_name);
-        let stem = format!("{}({})", base, b62id);
         let extension = get_extension_from_format(format).to_string();
+        let suffix = format!(" ({}).{}", b62id, extension);
+        let base = sanitize(format!("{} - {}", artists_string(track), track.name));
+        // Truncate only the readable part so the id and extension always survive.
+        let base = base.chars().take(MAX_FILE_NAME_LEN.saturating_sub(suffix.chars().count())).collect::<String>();
+        let base = base.trim_end().to_string();
+        let stem = format!("{} ({})", base, b62id);
         let name = format!("{}.{}", stem, extension);
-        let name = sanitize(name);
-        let name = name.chars().take(200).collect::<String>();
         let path = basepath.join(&name);
         let file = Self { base, stem, extension, name, path };
         Ok(file)

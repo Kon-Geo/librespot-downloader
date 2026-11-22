@@ -35,27 +35,17 @@ where
     occurrences
 }
 
-pub fn remove_bracketed_content(input: &str) -> Option<String> {
-    let mut result = String::new();
-    let mut depth = 0;
-    for c in input.chars() {
-        match c {
-            '(' | '[' => {
-                depth += 1;
-            }
-            ')' | ']' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-            }
-            _ => {
-                if depth == 0 {
-                    result.push(c);
-                }
-            }
-        }
+/// Splits "<base> (<22-char base62 id>)" into `<base>`. Returns None for files
+/// that don't follow this downloader's naming scheme.
+pub fn strip_id_suffix(stem: &str) -> Option<String> {
+    let inner = stem.strip_suffix(')')?;
+    let open = inner.rfind(" (")?;
+    let id = &inner[open + 2..];
+    if id.len() == 22 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        Some(inner[..open].to_string())
+    } else {
+        None
     }
-    Some(result)
 }
 
 pub struct FileDB {
@@ -82,16 +72,32 @@ impl FileDB {
         if self.tracked_artists.contains(&b62id) {
             return;
         }
-        let occurrences = collect_file_occurences(folder, &remove_bracketed_content);
+        let occurrences = collect_file_occurences(folder, &strip_id_suffix);
         self.files.extend(occurrences);
         self.tracked_artists.push(b62id.clone());
     }
 
     pub fn track_track(&mut self, file: TrackFileDescriptor) {
         self.files
-            .entry(file.stem.clone())
+            .entry(file.base.clone())
             .or_default()
             .push(file);
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_id_suffix;
+
+    #[test]
+    fn strips_only_trailing_id() {
+        let id = "4uLU6hMCjMI75M1A2tKUQC";
+        assert_eq!(
+            strip_id_suffix(&format!("A - Song (Live) ({})", id)).as_deref(),
+            Some("A - Song (Live)")
+        );
+        assert_eq!(strip_id_suffix("A - Song (Live)"), None);
+        assert_eq!(strip_id_suffix("random file"), None);
+    }
 }
