@@ -1,4 +1,4 @@
-use std::{fs::{File, create_dir_all, remove_file}, io::{Seek, SeekFrom, copy}, path::PathBuf};
+use std::{fs::{File, create_dir_all, remove_file, rename}, io::{Seek, SeekFrom, copy}, path::PathBuf};
 use librespot::{audio::{AudioDecrypt, AudioFile}, core::{Error, FileId, SpotifyId, SpotifyUri}, metadata::{Artist, Track, album::AlbumType, audio::{AudioFileFormat, AudioFiles}}};
 use log::{error, info, warn, debug};
 use sanitize_filename::sanitize;
@@ -187,8 +187,17 @@ impl TrackExt {
     pub async fn save_audio(&self, ctx: &DLContext) -> Result<(), Error> {
         let mut decrypted_file = self.format.get_audio_file(ctx, self.id).await?;
         create_dir_all(self.file.path.parent().unwrap())?;
-        let mut outfile = File::create(&self.file.path)?;
-        copy(&mut decrypted_file, &mut outfile)?;
+        // Write to a temporary file so an interrupted download never looks like a finished track.
+        let mut part_name = self.file.path.clone().into_os_string();
+        part_name.push(".part");
+        let part_path = PathBuf::from(part_name);
+        let result = File::create(&part_path)
+            .and_then(|mut outfile| copy(&mut decrypted_file, &mut outfile))
+            .and_then(|_| rename(&part_path, &self.file.path));
+        if let Err(e) = result {
+            let _ = remove_file(&part_path);
+            return Err(e.into());
+        }
         info!("<{}-{}> Track Save \"{}\"", self.b62id, self.inner.number, self.inner.name);
         Ok(())
     }
@@ -232,9 +241,13 @@ impl TrackExt {
         tag.insert(TagItem::new(ItemKey::TrackNumber, ItemValue::Text(self.inner.number.to_string())));
         tag.insert(TagItem::new(ItemKey::Isrc, ItemValue::Text(self.inner.id.to_uri()?)));
 
-        let cover = ctx.cover_cache.get_cover(ctx.session.http_client(), &self.inner).await?;
-        let picture = Picture::new_unchecked(PictureType::CoverFront, Some(cover.mime.clone()), Some("cover".to_string()), cover.data.clone());
-        tag.push_picture(picture);
+        match ctx.cover_cache.get_cover(ctx.session.http_client(), &self.inner).await {
+            Ok(cover) => {
+                let picture = Picture::new_unchecked(PictureType::CoverFront, Some(cover.mime.clone()), Some("cover".to_string()), cover.data.clone());
+                tag.push_picture(picture);
+            }
+            Err(e) => warn!("<{}-{}> Cover Fail \"{}\": {}", self.b62id, self.inner.number, self.inner.name, e),
+        }
 
         if let Err(e) = tag.save_to_path(&self.file.path, WriteOptions::default()) {
             warn!("<{}-{}> Metadata Fail \"{}\": {}", self.b62id, self.inner.number, self.inner.name, e);
@@ -250,7 +263,9 @@ impl TrackExt {
             return Ok(());
         }
         self.save_audio(ctx).await?;
-        self.apply_tag(ctx).await?;
+        if let Err(e) = self.apply_tag(ctx).await {
+            warn!("<{}-{}> Tag Fail \"{}\": {}", self.b62id, self.inner.number, self.inner.name, e);
+        }
         ctx.filedb.track_track(self.file.clone());
         Ok(())
     }
