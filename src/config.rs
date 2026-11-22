@@ -119,11 +119,59 @@ pub fn format_tag_type(format: AudioFileFormat) -> TagType {
 }
 
 pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
-    let contents = match fs::read_to_string(CONFIG) {
+    load_config_from(CONFIG)
+}
+
+pub fn load_config_from(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
+    let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(e) => return Err(e.into()),
     };
     let config: Config = serde_json::from_str(&contents)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_file(name: &str, contents: Option<&str>) -> String {
+        let path = std::env::temp_dir().join(format!("lsd-test-{}-{}", std::process::id(), name));
+        let _ = fs::remove_file(&path);
+        if let Some(c) = contents {
+            fs::write(&path, c).unwrap();
+        }
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn missing_config_gives_defaults() {
+        let config = load_config_from(&temp_file("missing.json", None)).unwrap();
+        assert_eq!(config.root_folder, "downloads");
+        assert_eq!(config.singles_folder, "Singles");
+    }
+
+    #[test]
+    fn malformed_config_is_an_error() {
+        assert!(load_config_from(&temp_file("bad.json", Some("{ nope"))).is_err());
+    }
+
+    #[test]
+    fn valid_config_loads() {
+        let path = temp_file("ok.json", Some(
+            r#"{"root_folder":"x","singles_folder":"S","default_genre":"G","artist_genres":{"a":["Rock"]},"exclude":{}}"#,
+        ));
+        let config = load_config_from(&path).unwrap();
+        assert_eq!(config.root_folder, "x");
+        assert_eq!(config.artist_genres["a"], vec!["Rock".to_string()]);
+    }
+
+    #[test]
+    fn extension_rank_follows_preference_order() {
+        assert!(get_extension_rank("flac") > get_extension_rank("aac"));
+        assert!(get_extension_rank("aac") > get_extension_rank("mp3"));
+        assert!(get_extension_rank("mp3") > get_extension_rank("ogg"));
+        assert_eq!(get_extension_rank("txt"), 0);
+    }
 }

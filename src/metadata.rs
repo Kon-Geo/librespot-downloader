@@ -7,6 +7,18 @@ use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate
 
 const MAX_FILE_NAME_LEN: usize = 200;
 
+/// Returns `(base, stem, name)` for `Artist - Title (id).ext`, truncating only the
+/// readable part so the id and extension always survive.
+pub fn build_file_name(artists: &str, title: &str, b62id: &str, extension: &str) -> (String, String, String) {
+    let suffix = format!(" ({}).{}", b62id, extension);
+    let base = sanitize(format!("{} - {}", artists, title));
+    let base: String = base.chars().take(MAX_FILE_NAME_LEN.saturating_sub(suffix.chars().count())).collect();
+    let base = base.trim_end().to_string();
+    let stem = format!("{} ({})", base, b62id);
+    let name = format!("{}.{}", stem, extension);
+    (base, stem, name)
+}
+
 pub fn artists_string(track: &Track) -> String {
     track.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ")
 }
@@ -80,13 +92,7 @@ impl TrackFileDescriptor {
         let b62id = track.id.to_id()?;
         let basepath = Self::get_path(ctx, &track);
         let extension = get_extension_from_format(format).to_string();
-        let suffix = format!(" ({}).{}", b62id, extension);
-        let base = sanitize(format!("{} - {}", artists_string(track), track.name));
-        // Truncate only the readable part so the id and extension always survive.
-        let base = base.chars().take(MAX_FILE_NAME_LEN.saturating_sub(suffix.chars().count())).collect::<String>();
-        let base = base.trim_end().to_string();
-        let stem = format!("{} ({})", base, b62id);
-        let name = format!("{}.{}", stem, extension);
+        let (base, stem, name) = build_file_name(&artists_string(track), &track.name, &b62id, &extension);
         let path = basepath.join(&name);
         let file = Self { base, stem, extension, name, path };
         Ok(file)
@@ -284,5 +290,67 @@ impl TrackExt {
         ctx.filedb.track_track(self.file.clone());
         ctx.stats.downloaded += 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fs::strip_id_suffix;
+    use std::path::PathBuf;
+
+    const ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
+
+    fn file(path: &str) -> TrackFileDescriptor {
+        TrackFileDescriptor {
+            base: String::new(),
+            stem: String::new(),
+            extension: String::new(),
+            name: String::new(),
+            path: PathBuf::from(path),
+        }
+    }
+
+    #[test]
+    fn file_name_keeps_id_and_extension_when_truncated() {
+        let long = "x".repeat(500);
+        let (base, stem, name) = build_file_name("Artist", &long, ID, "flac");
+        assert!(name.chars().count() <= MAX_FILE_NAME_LEN);
+        assert!(name.ends_with(&format!(" ({}).flac", ID)));
+        assert_eq!(strip_id_suffix(&stem).unwrap(), base);
+    }
+
+    #[test]
+    fn file_name_sanitizes_and_round_trips() {
+        let (base, _, name) = build_file_name("A/B", "What? (Live)", ID, "mp3");
+        assert!(!name.contains('/') && !name.contains('?'));
+        let stem = name.strip_suffix(".mp3").unwrap();
+        assert_eq!(strip_id_suffix(stem).unwrap(), base);
+    }
+
+    #[test]
+    fn album_copy_beats_single() {
+        let album = file("downloads/Rock/Band/Album/x.mp3");
+        let single = file("downloads/Rock/Band/Singles/x.mp3");
+        assert!(album.get_score("Singles") > single.get_score("Singles"));
+        // Even a better format in Singles does not beat the album copy.
+        let single_flac = file("downloads/Rock/Band/Singles/x.flac");
+        assert!(album.get_score("Singles") > single_flac.get_score("Singles"));
+    }
+
+    #[test]
+    fn better_format_wins_in_same_folder() {
+        let flac = file("downloads/Rock/Band/Album/x.flac");
+        let ogg = file("downloads/Rock/Band/Album/x.ogg");
+        let mp3 = file("downloads/Rock/Band/Album/x.mp3");
+        assert!(flac.get_score("Singles") > mp3.get_score("Singles"));
+        assert!(mp3.get_score("Singles") > ogg.get_score("Singles"));
+    }
+
+    #[test]
+    fn singles_match_is_by_path_component() {
+        let club = file("downloads/Rock/Singles Club/Album/x.mp3");
+        let plain = file("downloads/Rock/Band/Album/x.mp3");
+        assert_eq!(club.get_score("Singles"), plain.get_score("Singles"));
     }
 }

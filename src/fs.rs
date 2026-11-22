@@ -90,7 +90,26 @@ impl FileDB {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_id_suffix;
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn collects_files_recursively_by_base() {
+        let id = "4uLU6hMCjMI75M1A2tKUQC";
+        let root = std::env::temp_dir().join(format!("lsd-fs-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Album")).unwrap();
+        fs::create_dir_all(root.join("Singles")).unwrap();
+        fs::write(root.join("Album").join(format!("A - Song (Live) ({id}).mp3")), b"").unwrap();
+        fs::write(root.join("Singles").join(format!("A - Song (Live) ({id}).flac")), b"").unwrap();
+        fs::write(root.join("Album").join("notes.txt"), b"").unwrap();
+        fs::write(root.join("Album").join(format!("A - Song ({id}).mp3.part")), b"").unwrap();
+
+        let found = collect_file_occurences(&root, &strip_id_suffix);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found["A - Song (Live)"].len(), 2);
+    }
 
     #[test]
     fn strips_only_trailing_id() {
