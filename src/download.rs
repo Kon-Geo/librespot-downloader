@@ -77,8 +77,14 @@ impl Downloadable for Album {
 impl Downloadable for AlbumGroups {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         for uri in self.current_releases() {
-            let album = Album::get_by_uri(ctx, uri).await?;
-            album.download(ctx).await?;
+            match Album::get_by_uri(ctx, uri).await {
+                Ok(album) => {
+                    if let Err(e) = album.download(ctx).await {
+                        error!("<{}> Album Fail \"{}\" ({:?})", uri, album.name, e);
+                    }
+                }
+                Err(e) => error!("<{}> Album Fetch Fail ({:?})", uri, e),
+            }
         };
         Ok(())
     }
@@ -95,8 +101,17 @@ impl Downloadable for Track {
 impl Downloadable for Vec<&SpotifyUri> {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         for track_uri in self {
-            let track = Track::get(&ctx.session, track_uri).await?;
-            let b62id = track.id.to_id()?;
+            let track = match Track::get(&ctx.session, track_uri).await {
+                Ok(track) => track,
+                Err(e) => {
+                    error!("<{}> Track Fetch Fail ({:?})", track_uri, e);
+                    continue;
+                }
+            };
+            let Ok(b62id) = track.id.to_id() else {
+                error!("<{}> Track Invalid ID \"{}\"", track_uri, track.name);
+                continue;
+            };
             if ctx.config.exclude.contains_key(&b62id) {
                 warn!("<{}> Track Exclude \"{}\"", b62id, track.name);
             } else if let Err(e) = track.download(ctx).await {
