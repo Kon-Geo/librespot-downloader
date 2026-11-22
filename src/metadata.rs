@@ -256,13 +256,6 @@ impl TrackExt {
         if !album_artists.is_empty() {
             tag.insert(TagItem::new(ItemKey::AlbumArtist, ItemValue::Text(album_artists)));
         }
-        // Only tag a genre when the artist is explicitly configured, not the "Generic" fallback.
-        if let Some(b62id) = self.inner.album.artists.0.first().and_then(|a| a.id.to_id().ok()) {
-            if ctx.config.artist_genres.contains_key(&b62id) {
-                tag.insert(TagItem::new(ItemKey::Genre, ItemValue::Text(ArtistExt::get_genre(ctx, &b62id))));
-            }
-        }
-
         match ctx.cover_cache.get_cover(ctx.session.http_client(), &self.inner).await {
             Ok(cover) => {
                 let picture = Picture::new_unchecked(PictureType::CoverFront, Some(cover.mime.clone()), Some("cover".to_string()), cover.data.clone());
