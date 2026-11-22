@@ -1,4 +1,5 @@
 use librespot::core::Session;
+use std::collections::BTreeMap;
 use log::warn;
 use crate::{config::{CONFIG, Config, load_config}, cover::CoverCache, fs::FileDB};
 
@@ -15,6 +16,8 @@ pub struct DLContext {
     pub session: Session,
     pub cover_cache: CoverCache,
     pub filedb: FileDB,
+    /// Artists seen this session that have no configured genre (id -> name).
+    pub unsorted: BTreeMap<String, String>,
 }
 
 impl DLContext {
@@ -29,6 +32,7 @@ impl DLContext {
             session,
             cover_cache: CoverCache::new(),
             filedb: FileDB::new(),
+            unsorted: BTreeMap::new(),
         }
     }
 }

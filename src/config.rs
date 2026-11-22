@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use librespot::metadata::audio::AudioFileFormat;
 use lofty::tag::TagType;
@@ -9,8 +9,11 @@ pub struct Config {
     pub root_folder: String,
     pub singles_folder: String,
     pub default_genre: String,
-    pub artist_genres: HashMap<String, Vec<String>>,
-    pub exclude: HashMap<String, String>,
+    pub artist_genres: BTreeMap<String, Vec<String>>,
+    pub exclude: BTreeMap<String, String>,
+    /// Artist id -> display name, written when a genre is assigned so the file stays readable.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artist_names: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -19,8 +22,9 @@ impl Default for Config {
             root_folder: "downloads".to_string(),
             singles_folder: "Singles".to_string(),
             default_genre: "Generic".to_string(),
-            artist_genres: HashMap::new(),
-            exclude: HashMap::new(),
+            artist_genres: BTreeMap::new(),
+            exclude: BTreeMap::new(),
+            artist_names: BTreeMap::new(),
         }
     }
 }
@@ -132,6 +136,22 @@ pub fn load_config_from(path: &str) -> Result<Config, Box<dyn std::error::Error>
     Ok(config)
 }
 
+/// Writes the config atomically (temp file + rename) so a crash can't leave a truncated file.
+pub fn save_config_to(path: &str, config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let json = serde_json::to_string_pretty(config)?;
+    let tmp = format!("{}.tmp", path);
+    fs::write(&tmp, json)?;
+    if let Err(e) = fs::rename(&tmp, Path::new(path)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    save_config_to(CONFIG, config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +193,27 @@ mod tests {
         assert!(get_extension_rank("aac") > get_extension_rank("mp3"));
         assert!(get_extension_rank("mp3") > get_extension_rank("ogg"));
         assert_eq!(get_extension_rank("txt"), 0);
+    }
+
+    #[test]
+    fn config_round_trips_through_save() {
+        let path = temp_file("save.json", None);
+        let mut config = Config::default();
+        config.artist_genres.insert("b".into(), vec!["Pop".into()]);
+        config.artist_genres.insert("a".into(), vec!["Rock".into()]);
+        config.artist_names.insert("a".into(), "Artist A".into());
+        save_config_to(&path, &config).unwrap();
+        let loaded = load_config_from(&path).unwrap();
+        assert_eq!(loaded.artist_genres, config.artist_genres);
+        assert_eq!(loaded.artist_names["a"], "Artist A");
+        assert!(!Path::new(&format!("{}.tmp", path)).exists());
+    }
+
+    #[test]
+    fn old_config_without_artist_names_still_loads() {
+        let path = temp_file("old.json", Some(
+            r#"{"root_folder":"x","singles_folder":"S","default_genre":"G","artist_genres":{},"exclude":{}}"#,
+        ));
+        assert!(load_config_from(&path).unwrap().artist_names.is_empty());
     }
 }

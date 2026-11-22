@@ -23,5 +23,14 @@ and `spotify:track:ID` URIs.
 
 Copy `config.example.json` to `config.json` (git-ignored). A missing file means defaults; a malformed one logs a warning.
 
-- `artist_genres`: artist id -> genres; first entry is the folder and genre tag.
+- `artist_genres`: artist id -> genres; first entry is the folder and genre tag. You normally don't edit this by hand (see below).
+- `artist_names`: optional artist id -> name, filled in automatically so the file stays readable.
 - `exclude`: album/track ids to skip.
+
+## Assigning genres
+
+After each batch, any artist without a genre is offered a menu (genres already in use, or type a new one, Enter to skip).
+The answer is saved to `config.json` and the artist's existing folder is moved under the new genre.
+
+- `genre <artist url> <Genre>`: set a genre directly (also re-files that artist's folder).
+- `genres`: be prompted again for artists you skipped.

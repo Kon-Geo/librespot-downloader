@@ -5,4 +5,5 @@ pub mod fs;
 pub mod url;
 pub mod ctx;
 pub mod config;
+pub mod genre;
 pub mod metadata;

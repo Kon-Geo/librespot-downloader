@@ -74,6 +74,7 @@ impl ArtistExt {
         ctx.filedb.track_artist(&self.b62id, &self.folder);
         if !ctx.config.artist_genres.contains_key(&self.b62id) {
             info!("<{}> Artist Track \"{}\"", self.id, self.inner.name);
+            ctx.unsorted.insert(self.b62id.clone(), self.inner.name.clone());
         }
     }
 }

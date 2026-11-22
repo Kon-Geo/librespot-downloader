@@ -2,7 +2,7 @@ use std::io;
 use librespot::{core::{Error, SpotifyId}, metadata::{Album, Artist, Playlist, Track}};
 use log::{error, info};
 
-use crate::{ctx::DLContext, download::GetById};
+use crate::{ctx::DLContext, download::GetById, genre::{assign_genre, prompt_unsorted}};
 
 /// Reads one line from stdin and downloads it.
 /// Returns `Ok(false)` when the user is done (EOF or a quit command).
@@ -17,6 +17,16 @@ pub async fn download_from_stdin(ctx: &mut DLContext) -> Result<bool, Error> {
     match input {
         "" => Ok(true),
         "q" | "quit" | "exit" => Ok(false),
+        "genres" => {
+            if ctx.unsorted.is_empty() {
+                info!("No artists waiting for a genre.");
+            }
+            Ok(prompt_unsorted(ctx))
+        }
+        _ if input.starts_with("genre ") => {
+            set_genre_command(ctx, input["genre ".len()..].trim()).await;
+            Ok(true)
+        }
         _ => {
             for url in input.split_whitespace() {
                 if let Err(e) = download_by_url(ctx, url).await {
@@ -29,8 +39,32 @@ pub async fn download_from_stdin(ctx: &mut DLContext) -> Result<bool, Error> {
                 "Done: {} downloaded, {} skipped, {} failed",
                 stats.downloaded, stats.skipped, stats.failed
             );
-            Ok(true)
+            Ok(prompt_unsorted(ctx))
         }
+    }
+}
+
+/// `genre <artist url|uri> <Genre>`
+async fn set_genre_command(ctx: &mut DLContext, args: &str) {
+    let Some((url, genre)) = args.split_once(char::is_whitespace) else {
+        error!("Usage: genre <artist url> <Genre>");
+        return;
+    };
+    let genre = sanitize_filename::sanitize(genre.trim());
+    if genre.is_empty() {
+        error!("Usage: genre <artist url> <Genre>");
+        return;
+    }
+    match parse_url(url) {
+        Ok(("artist", id)) => match Artist::get_by_id(ctx, id).await {
+            Ok(artist) => match id.to_base62() {
+                Ok(b62id) => assign_genre(ctx, &b62id, &artist.name, &genre),
+                Err(e) => error!("Genre Fail \"{}\": {}", url, e),
+            },
+            Err(e) => error!("Artist Fetch Fail \"{}\": {}", url, e),
+        },
+        Ok(_) => error!("Genre needs an artist link, got \"{}\"", url),
+        Err(e) => error!("Genre Fail \"{}\": {}", url, e),
     }
 }
 
