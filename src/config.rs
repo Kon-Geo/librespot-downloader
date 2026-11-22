@@ -119,7 +119,11 @@ pub fn format_tag_type(format: AudioFileFormat) -> TagType {
 }
 
 pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
-    let contents = fs::read_to_string(CONFIG)?;
+    let contents = match fs::read_to_string(CONFIG) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e.into()),
+    };
     let config: Config = serde_json::from_str(&contents)?;
     Ok(config)
 }

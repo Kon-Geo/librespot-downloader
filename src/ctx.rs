@@ -1,5 +1,6 @@
 use librespot::core::Session;
-use crate::{config::{Config, load_config}, cover::CoverCache, fs::FileDB};
+use log::warn;
+use crate::{config::{CONFIG, Config, load_config}, cover::CoverCache, fs::FileDB};
 
 pub struct DLContext {
     pub config: Config,
@@ -10,7 +11,10 @@ pub struct DLContext {
 
 impl DLContext {
     pub fn new(session: Session) -> Self {
-        let config = load_config().unwrap_or_else(|_| Config::default());
+        let config = load_config().unwrap_or_else(|e| {
+            warn!("Config Fail \"{}\": {} (using defaults)", CONFIG, e);
+            Config::default()
+        });
         Self {
             config,
             session,

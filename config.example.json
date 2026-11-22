@@ -1,0 +1,11 @@
+{
+  "root_folder": "downloads",
+  "singles_folder": "Singles",
+  "default_genre": "Generic",
+  "artist_genres": {
+    "<artist base62 id>": ["Rock"]
+  },
+  "exclude": {
+    "<album or track base62 id>": "reason (free text)"
+  }
+}

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use bytes::Bytes;
 use http::{HeaderValue, Method, Request, header::ACCEPT};
 use librespot::{core::{Error, http_client::HttpClient}, metadata::{Track, image}};
@@ -11,20 +11,20 @@ pub struct Cover {
 }
 
 pub struct CoverCache {
-    covers: RefCell<HashMap<String, Arc<Cover>>>,
+    covers: HashMap<String, Arc<Cover>>,
 }
 
 impl CoverCache {
     pub fn new() -> Self {
-        Self { covers: RefCell::new(HashMap::new()) }
+        Self { covers: HashMap::new() }
     }
 
     fn get(&self, id: &str) -> Option<Arc<Cover>> {
-        self.covers.borrow().get(id).cloned()
+        self.covers.get(id).cloned()
     }
 
-    fn insert(&self, id: String, cover: Arc<Cover>) {
-        self.covers.borrow_mut().insert(id, cover);
+    fn insert(&mut self, id: String, cover: Arc<Cover>) {
+        self.covers.insert(id, cover);
     }
 
     pub async fn get_cover(&mut self, http: &HttpClient, track: &Track) -> Result<Arc<Cover>, Error> {
@@ -41,11 +41,8 @@ impl CoverCache {
             .max_by_key(|c| size_rank(c.size))
             .ok_or_else(|| Error::failed_precondition("Album has no cover"))?;
         let cover_id = cover.id.to_string();
-        {
-            if let Some(cover) = self.get(&cover_id) {
-                return Ok(cover);
-            }
-    
+        if let Some(cover) = self.get(&cover_id) {
+            return Ok(cover);
         }
         let cover = self.download_cover(http, &cover_id).await?;
         self.insert(cover_id.clone(), cover.clone());
