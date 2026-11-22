@@ -1,11 +1,19 @@
-use std::{fs::{File, create_dir_all, remove_file, rename}, io::{Seek, SeekFrom, copy}, path::PathBuf};
+use std::{time::Duration, fs::{File, create_dir_all, remove_file, rename}, io::{Seek, SeekFrom, copy}, path::PathBuf};
 use librespot::{audio::{AudioDecrypt, AudioFile}, core::{Error, FileId, SpotifyId, SpotifyUri}, metadata::{Artist, Track, album::AlbumType, audio::{AudioFileFormat, AudioFiles}}};
+use librespot::core::error::ErrorKind;
 use log::{error, info, warn, debug};
 use sanitize_filename::sanitize;
 use lofty::{config::WriteOptions, picture::{Picture, PictureType}, tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType}};
 use crate::{config::{FORMAT_PREFERENCE, SPOTIFY_OGG_HEADER_END, format_data_rate, format_tag_type, get_extension_from_format, get_extension_rank}, ctx::DLContext};
 
 const MAX_FILE_NAME_LEN: usize = 200;
+const MAX_ATTEMPTS: u32 = 3;
+const RETRY_BASE_SECS: u64 = 3;
+
+/// Only timeouts are worth retrying; anything else (no format, bad id, disk errors) won't change.
+pub fn is_retryable(e: &Error) -> bool {
+    e.kind == ErrorKind::DeadlineExceeded
+}
 
 /// Returns `(base, stem, name)` for `Artist - Title (id).ext`, truncating only the
 /// readable part so the id and extension always survive.
@@ -273,11 +281,27 @@ impl TrackExt {
         Ok(())
     }
 
+    /// Retries timeouts a few times, one at a time with a growing pause, so we never hammer Spotify.
+    async fn save_audio_with_retry(&self, ctx: &DLContext) -> Result<(), Error> {
+        let mut attempt = 1;
+        loop {
+            match self.save_audio(ctx).await {
+                Err(e) if is_retryable(&e) && attempt < MAX_ATTEMPTS => {
+                    let wait = Duration::from_secs(RETRY_BASE_SECS * attempt as u64);
+                    warn!("<{}-{}> Timeout, retry {}/{} in {}s \"{}\"", self.b62id, self.inner.number, attempt, MAX_ATTEMPTS - 1, wait.as_secs(), self.inner.name);
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
     pub async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
         if !self.deduplication_check(ctx).await {
             return Ok(());
         }
-        self.save_audio(ctx).await?;
+        self.save_audio_with_retry(ctx).await?;
         if let Err(e) = self.apply_tag(ctx).await {
             warn!("<{}-{}> Tag Fail \"{}\": {}", self.b62id, self.inner.number, self.inner.name, e);
         }
@@ -303,6 +327,12 @@ mod tests {
             name: String::new(),
             path: PathBuf::from(path),
         }
+    }
+
+    #[test]
+    fn only_timeouts_are_retried() {
+        assert!(is_retryable(&Error::deadline_exceeded("slow")));
+        assert!(!is_retryable(&Error::failed_precondition("no format")));
     }
 
     #[test]
