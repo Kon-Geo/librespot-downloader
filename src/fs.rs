@@ -35,6 +35,19 @@ where
     occurrences
 }
 
+/// Deletes leftover `.part` files from interrupted downloads under `path`.
+pub fn remove_stale_parts(path: &Path) {
+    let Ok(entries) = fs::read_dir(path) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            remove_stale_parts(&path);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("part") {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 /// Splits "<base> (<22-char base62 id>)" into `<base>`. Returns None for files
 /// that don't follow this downloader's naming scheme.
 pub fn strip_id_suffix(stem: &str) -> Option<String> {
@@ -72,6 +85,7 @@ impl FileDB {
         if self.tracked_artists.contains(&b62id) {
             return;
         }
+        remove_stale_parts(folder);
         let occurrences = collect_file_occurences(folder, &strip_id_suffix);
         for (base, files) in occurrences {
             self.files.entry(base).or_default().extend(files);
@@ -105,6 +119,8 @@ mod tests {
         fs::write(root.join("Album").join("notes.txt"), b"").unwrap();
         fs::write(root.join("Album").join(format!("A - Song ({id}).mp3.part")), b"").unwrap();
 
+        remove_stale_parts(&root);
+        assert!(!root.join("Album").join(format!("A - Song ({id}).mp3.part")).exists());
         let found = collect_file_occurences(&root, &strip_id_suffix);
         let _ = fs::remove_dir_all(&root);
         assert_eq!(found.len(), 1);
