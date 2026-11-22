@@ -34,3 +34,12 @@ The answer is saved to `config.json` and the artist's existing folder is moved u
 
 - `genre <artist url> <Genre>`: set a genre directly (also re-files that artist's folder).
 - `genres`: be prompted again for artists you skipped.
+
+## Sorting an existing library
+
+`sort` goes through the artist folders under `<root>/<default_genre>` (normally `Generic`), finds each artist from a
+downloaded track's id, and shows the genre menu. Answers are saved to `config.json` straight away and the folder is moved.
+
+- `sort --dry-run`: only reports what would happen; nothing is asked, written or moved.
+- Before the first write, `config.json` is copied to `config.json.bak` (an existing `.bak` is never overwritten).
+- `q` at the menu stops; Enter skips an artist. Folders without recognisable files are listed as skipped.

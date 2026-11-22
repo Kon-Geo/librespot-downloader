@@ -51,14 +51,35 @@ pub fn remove_stale_parts(path: &Path) {
 /// Splits "<base> (<22-char base62 id>)" into `<base>`. Returns None for files
 /// that don't follow this downloader's naming scheme.
 pub fn strip_id_suffix(stem: &str) -> Option<String> {
+    split_id_suffix(stem).map(|(base, _)| base)
+}
+
+/// Splits "<base> (<22-char base62 id>)" into `(<base>, <id>)`.
+pub fn split_id_suffix(stem: &str) -> Option<(String, String)> {
     let inner = stem.strip_suffix(')')?;
     let open = inner.rfind(" (")?;
     let id = &inner[open + 2..];
     if id.len() == 22 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
-        Some(inner[..open].to_string())
+        Some((inner[..open].to_string(), id.to_string()))
     } else {
         None
     }
+}
+
+/// Finds the track id of any downloaded file under `dir` (ignores `.part` files).
+pub fn first_track_id(dir: &Path) -> Option<String> {
+    let mut subdirs = Vec::new();
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            subdirs.push(path);
+        } else if path.extension().and_then(|e| e.to_str()) != Some("part") {
+            if let Some((_, id)) = path.file_stem().and_then(|s| s.to_str()).and_then(split_id_suffix) {
+                return Some(id);
+            }
+        }
+    }
+    subdirs.iter().find_map(|d| first_track_id(d))
 }
 
 pub struct FileDB {
@@ -136,5 +157,21 @@ mod tests {
         );
         assert_eq!(strip_id_suffix("A - Song (Live)"), None);
         assert_eq!(strip_id_suffix("random file"), None);
+        assert_eq!(split_id_suffix(&format!("A - Song ({})", id)).unwrap().1, id);
+    }
+
+    #[test]
+    fn finds_a_track_id_in_nested_folders() {
+        let id = "4uLU6hMCjMI75M1A2tKUQC";
+        let root = std::env::temp_dir().join(format!("lsd-fs-id-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Album")).unwrap();
+        fs::write(root.join("Album").join("cover.jpg"), b"").unwrap();
+        fs::write(root.join("Album").join(format!("A - Song ({id}).mp3.part")), b"").unwrap();
+        assert_eq!(first_track_id(&root), None);
+        fs::write(root.join("Album").join(format!("A - Song ({id}).mp3")), b"").unwrap();
+        let found = first_track_id(&root);
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(found.as_deref(), Some(id));
     }
 }

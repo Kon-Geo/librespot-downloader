@@ -2,7 +2,7 @@ use std::io;
 use librespot::{core::{Error, SpotifyId}, metadata::{Album, Artist, Playlist, Track}};
 use log::{error, info};
 
-use crate::{ctx::DLContext, download::GetById, genre::{assign_genre, prompt_unsorted}};
+use crate::{ctx::DLContext, download::GetById, genre::{assign_genre, prompt_unsorted, sort_generic}};
 
 /// Reads one line from stdin and downloads it.
 /// Returns `Ok(false)` when the user is done (EOF or a quit command).
@@ -23,6 +23,8 @@ pub async fn download_from_stdin(ctx: &mut DLContext) -> Result<bool, Error> {
             }
             Ok(prompt_unsorted(ctx))
         }
+        "sort" => Ok(sort_generic(ctx, false).await),
+        "sort --dry-run" | "sort dry-run" => Ok(sort_generic(ctx, true).await),
         _ if input.starts_with("genre ") => {
             set_genre_command(ctx, input["genre ".len()..].trim()).await;
             Ok(true)

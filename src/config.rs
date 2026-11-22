@@ -148,6 +148,21 @@ pub fn save_config_to(path: &str, config: &Config) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// Copies the config to `<path>.bak` unless a backup already exists, so the earliest
+/// hand-written version is never overwritten. Returns the backup path if one was made.
+pub fn backup_config_to(path: &str) -> std::io::Result<Option<String>> {
+    let bak = format!("{}.bak", path);
+    if !Path::new(path).exists() || Path::new(&bak).exists() {
+        return Ok(None);
+    }
+    fs::copy(path, &bak)?;
+    Ok(Some(bak))
+}
+
+pub fn backup_config() -> std::io::Result<Option<String>> {
+    backup_config_to(CONFIG)
+}
+
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     save_config_to(CONFIG, config)
 }
@@ -207,6 +222,19 @@ mod tests {
         assert_eq!(loaded.artist_genres, config.artist_genres);
         assert_eq!(loaded.artist_names["a"], "Artist A");
         assert!(!Path::new(&format!("{}.tmp", path)).exists());
+    }
+
+    #[test]
+    fn backup_is_made_once_and_never_overwritten() {
+        let path = temp_file("bak.json", Some("original"));
+        let bak = format!("{}.bak", path);
+        let _ = fs::remove_file(&bak);
+        assert_eq!(backup_config_to(&path).unwrap().as_deref(), Some(bak.as_str()));
+        fs::write(&path, "changed").unwrap();
+        assert_eq!(backup_config_to(&path).unwrap(), None);
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "original");
+        assert_eq!(backup_config_to(&temp_file("nofile.json", None)).unwrap(), None);
+        let _ = fs::remove_file(&bak);
     }
 
     #[test]
