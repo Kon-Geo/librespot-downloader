@@ -106,15 +106,15 @@ impl TrackFileDescriptor {
         dirpath
     }
 
-    pub fn get_score(&self, singles_folder: &String) -> i32 {
+    pub fn get_score(&self, singles_folder: &str) -> i32 {
         let mut score: i32 = 0;
         if let Some(extension) = self.path.extension().and_then(|s| s.to_str()) {
             score += get_extension_rank(extension);
         }
-        if let Some(path_str) = self.path.to_str() {
-            if !path_str.contains(singles_folder) {
-                score += 10;
-            }
+        // Being outside the singles folder outweighs any format difference.
+        let in_singles = self.path.components().any(|c| c.as_os_str() == singles_folder);
+        if !in_singles {
+            score += 100;
         }
         score
     }
@@ -239,7 +239,21 @@ impl TrackExt {
         tag.insert(TagItem::new(ItemKey::AlbumTitle, ItemValue::Text(self.inner.album.name.clone())));
         tag.insert(TagItem::new(ItemKey::TrackArtist, ItemValue::Text(artists_string(&self.inner))));
         tag.insert(TagItem::new(ItemKey::TrackNumber, ItemValue::Text(self.inner.number.to_string())));
-        tag.insert(TagItem::new(ItemKey::Isrc, ItemValue::Text(self.inner.id.to_uri()?)));
+        tag.insert(TagItem::new(ItemKey::DiscNumber, ItemValue::Text(self.inner.disc_number.to_string())));
+        tag.insert(TagItem::new(ItemKey::Year, ItemValue::Text(self.inner.album.date.year().to_string())));
+        if let Some(isrc) = self.inner.external_ids.iter().find(|e| e.external_type.eq_ignore_ascii_case("isrc")) {
+            tag.insert(TagItem::new(ItemKey::Isrc, ItemValue::Text(isrc.id.clone())));
+        }
+        let album_artists = self.inner.album.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(" & ");
+        if !album_artists.is_empty() {
+            tag.insert(TagItem::new(ItemKey::AlbumArtist, ItemValue::Text(album_artists)));
+        }
+        // Only tag a genre when the artist is explicitly configured, not the "Generic" fallback.
+        if let Some(b62id) = self.inner.album.artists.0.first().and_then(|a| a.id.to_id().ok()) {
+            if ctx.config.artist_genres.contains_key(&b62id) {
+                tag.insert(TagItem::new(ItemKey::Genre, ItemValue::Text(ArtistExt::get_genre(ctx, &b62id))));
+            }
+        }
 
         match ctx.cover_cache.get_cover(ctx.session.http_client(), &self.inner).await {
             Ok(cover) => {

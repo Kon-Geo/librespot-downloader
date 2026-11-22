@@ -73,7 +73,9 @@ impl FileDB {
             return;
         }
         let occurrences = collect_file_occurences(folder, &strip_id_suffix);
-        self.files.extend(occurrences);
+        for (base, files) in occurrences {
+            self.files.entry(base).or_default().extend(files);
+        }
         self.tracked_artists.push(b62id.clone());
     }
 
