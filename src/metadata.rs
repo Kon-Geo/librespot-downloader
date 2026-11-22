@@ -228,6 +228,7 @@ impl TrackExt {
             };
         }
         if !download {
+            ctx.stats.skipped += 1;
             warn!("<{}-{}> Track Exists \"{}\"", self.b62id, self.inner.number, self.inner.name);
         }
         download
@@ -281,6 +282,7 @@ impl TrackExt {
             warn!("<{}-{}> Tag Fail \"{}\": {}", self.b62id, self.inner.number, self.inner.name, e);
         }
         ctx.filedb.track_track(self.file.clone());
+        ctx.stats.downloaded += 1;
         Ok(())
     }
 }

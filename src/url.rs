@@ -20,9 +20,15 @@ pub async fn download_from_stdin(ctx: &mut DLContext) -> Result<bool, Error> {
         _ => {
             for url in input.split_whitespace() {
                 if let Err(e) = download_by_url(ctx, url).await {
+                    ctx.stats.failed += 1;
                     error!("Download Fail \"{}\": {}", url, e);
                 }
             }
+            let stats = std::mem::take(&mut ctx.stats);
+            info!(
+                "Done: {} downloaded, {} skipped, {} failed",
+                stats.downloaded, stats.skipped, stats.failed
+            );
             Ok(true)
         }
     }

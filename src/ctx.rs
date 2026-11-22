@@ -2,7 +2,15 @@ use librespot::core::Session;
 use log::warn;
 use crate::{config::{CONFIG, Config, load_config}, cover::CoverCache, fs::FileDB};
 
+#[derive(Debug, Default)]
+pub struct Stats {
+    pub downloaded: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
 pub struct DLContext {
+    pub stats: Stats,
     pub config: Config,
     pub session: Session,
     pub cover_cache: CoverCache,
@@ -16,6 +24,7 @@ impl DLContext {
             Config::default()
         });
         Self {
+            stats: Stats::default(),
             config,
             session,
             cover_cache: CoverCache::new(),

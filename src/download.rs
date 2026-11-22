@@ -1,5 +1,5 @@
 use librespot::{core::{Error, SpotifyId, SpotifyUri}, metadata::{Album, Artist, Metadata, Playlist, Track, album::AlbumType, artist::AlbumGroups}};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use crate::{ctx::DLContext, metadata::{TrackExt}};
 
 pub(crate) trait Downloadable {
@@ -100,21 +100,27 @@ impl Downloadable for Track {
 
 impl Downloadable for Vec<&SpotifyUri> {
     async fn download(&self, ctx: &mut DLContext) -> Result<(), Error> {
-        for track_uri in self {
+        let total = self.len();
+        for (i, track_uri) in self.iter().enumerate() {
+            info!("[{}/{}] {}", i + 1, total, track_uri);
             let track = match Track::get(&ctx.session, track_uri).await {
                 Ok(track) => track,
                 Err(e) => {
+                    ctx.stats.failed += 1;
                     error!("<{}> Track Fetch Fail ({:?})", track_uri, e);
                     continue;
                 }
             };
             let Ok(b62id) = track.id.to_id() else {
+                ctx.stats.failed += 1;
                 error!("<{}> Track Invalid ID \"{}\"", track_uri, track.name);
                 continue;
             };
             if ctx.config.exclude.contains_key(&b62id) {
+                ctx.stats.skipped += 1;
                 warn!("<{}> Track Exclude \"{}\"", b62id, track.name);
             } else if let Err(e) = track.download(ctx).await {
+                ctx.stats.failed += 1;
                 error!("<{}> Track Fail {} ({:?})", b62id, track.name, e);
             };
         };
